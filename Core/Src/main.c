@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdlib.h>
 #include <stdio.h>
+#include "cirbuf.h"
 
 /* USER CODE END Includes */
 
@@ -59,10 +60,14 @@ uint32_t adc_val;
 
 // Define circular buffers used for DSP.
 #define CIRBUF_LEN 5
-float cirbuf_x[CIRBUF_LEN];
-float cirbuf_hpf[CIRBUF_LEN];
-float cirbuf_env[CIRBUF_LEN];
-float cirbuf_y[CIRBUF_LEN];
+float cirbuf_mic[CIRBUF_LEN];
+float cirbuf_y_hpf[CIRBUF_LEN];
+float cirbuf_y_rect[CIRBUF_LEN];
+float cirbuf_y_env[CIRBUF_LEN];
+float cirbuf_y_hpf_beat[CIRBUF_LEN];
+
+float cirbuf_intensity[CIRBUF_LEN];
+
 uint32_t cirbuf_pwm[CIRBUF_LEN];
 uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffer
 uint32_t proc_time;
@@ -113,30 +118,30 @@ static void MX_ADC1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-float ArrayIdxToCirBufIdx(
-		uint8_t start_idx,
-		int8_t array_idx,
-		uint8_t cirbuf_len)
-{
-	// Allow Negative indexes (with some overhead)
-	while (array_idx < 0){
-		array_idx += cirbuf_len;
-	}
-	return (start_idx + array_idx) % cirbuf_len;
-}
+//float ArrayIdxToCirBufIdx(
+//		uint8_t start_idx,
+//		int8_t array_idx,
+//		uint8_t cirbuf_len)
+//{
+//	// Allow Negative indexes (with some overhead)
+//	while (array_idx < 0){
+//		array_idx += cirbuf_len;
+//	}
+//	return (start_idx + array_idx) % cirbuf_len;
+//}
 
-uint32_t ApplyGain(float float_val, uint32_t gain, uint32_t max_val)
-{
-	uint32_t mult_val = (uint32_t) float_val * gain;
-	if (mult_val > max_val)
-	{
-		return max_val;
-	}
-	else
-	{
-		return mult_val;
-	}
-}
+//uint32_t ApplyGain(float float_val, uint32_t gain, uint32_t max_val)
+//{
+//	uint32_t mult_val = (uint32_t) float_val * gain;
+//	if (mult_val > max_val)
+//	{
+//		return max_val;
+//	}
+//	else
+//	{
+//		return mult_val;
+//	}
+//}
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
