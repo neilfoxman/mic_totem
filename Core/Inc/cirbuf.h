@@ -15,4 +15,10 @@ float ArrayIdxToCirBufIdx(
 		int8_t array_idx,
 		uint8_t cirbuf_len);
 
+float ApplyFirstDifferenceLPF(float alpha, float one_minus_alpha, float x_0, float y_minus_1);
+
+float ApplyFirstDifferenceEnvelopeLPF(float alpha, float one_minus_alpha, float x_0, float y_minus_1);
+
+float ApplyFirstDifferenceHPF(float one_minus_alpha, float x_0, float x_minus_1, float y_minus_1);
+
 #endif /* INC_CIRBUF_H_ */

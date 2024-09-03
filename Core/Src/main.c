@@ -54,12 +54,14 @@ UART_HandleTypeDef huart2;
 // Declare Sample Frequency
 float T_s;
 float f_s;
+float pi = 3.1415;
 
 // Declare variable used for DMA transfers
 uint32_t adc_val;
 
 // Define circular buffers used for DSP.
 #define CIRBUF_LEN 5
+uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffer
 float cirbuf_mic[CIRBUF_LEN];
 float cirbuf_y_hpf[CIRBUF_LEN];
 float cirbuf_y_rect[CIRBUF_LEN];
@@ -68,24 +70,9 @@ float cirbuf_y_hpf_beat[CIRBUF_LEN];
 
 float cirbuf_intensity[CIRBUF_LEN];
 
-uint32_t cirbuf_pwm[CIRBUF_LEN];
-uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffer
+uint32_t cirbuf_pwm;
+
 uint32_t proc_time;
-
-// Declare variables used for HPF
-float f_cutoff_hpf;
-float w_cutoff_hpf;
-
-
-// Declare variables used for envelope filter
-float f_cutoff_env;
-float w_cutoff_env;
-float env_coef1;
-float env_coef2;
-
-// Declare variables used for PWM output
-uint32_t pwm_gain;
-
 
 // Flag used to capture a number of samples for offline debug
 #define DEBUG_CAPTURE 0
@@ -118,71 +105,62 @@ static void MX_ADC1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-//float ArrayIdxToCirBufIdx(
-//		uint8_t start_idx,
-//		int8_t array_idx,
-//		uint8_t cirbuf_len)
-//{
-//	// Allow Negative indexes (with some overhead)
-//	while (array_idx < 0){
-//		array_idx += cirbuf_len;
-//	}
-//	return (start_idx + array_idx) % cirbuf_len;
-//}
-
-//uint32_t ApplyGain(float float_val, uint32_t gain, uint32_t max_val)
-//{
-//	uint32_t mult_val = (uint32_t) float_val * gain;
-//	if (mult_val > max_val)
-//	{
-//		return max_val;
-//	}
-//	else
-//	{
-//		return mult_val;
-//	}
-//}
-
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	// Get indexes of nearby values for difference equations
-	uint8_t cirbuf_idx_minus1 = ArrayIdxToCirBufIdx(cirbuf_idx, -1, CIRBUF_LEN);
-//	uint8_t cirbuf_idx_minus2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
+	uint8_t cirbuf_idx_minus_1 = ArrayIdxToCirBufIdx(cirbuf_idx, -1, CIRBUF_LEN);
+//	uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
 
 	// Save ADC read to circular buffer
-	cirbuf_x[cirbuf_idx] = adc_val;
+	cirbuf_mic[cirbuf_idx] = adc_val;
 
-	// Apply HPF and rectify
-	cirbuf_hpf[cirbuf_idx] = abs(cirbuf_x[cirbuf_idx] - cirbuf_x[cirbuf_idx_minus1]);
-//	cirbuf_hpf[cirbuf_idx] = cirbuf_x[cirbuf_idx]; // Bypass, for debugging
+	// Apply HPF
+	float w_n_hpf = 2 * pi * 30;
+	float one_minus_alpha_hpf = f_s / (f_s + w_n_hpf);
+	cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
+			one_minus_alpha_hpf,
+			cirbuf_mic[cirbuf_idx],
+			cirbuf_mic[cirbuf_idx_minus_1],
+			cirbuf_y_hpf[cirbuf_idx_minus_1]);
 
-	// Apply first order envelope function.  Preprocess the coefficients to make processing cycle faster
-	float tmp_env = env_coef1 * cirbuf_hpf[cirbuf_idx] + env_coef2 * cirbuf_env[cirbuf_idx_minus1];
-	if (cirbuf_hpf[cirbuf_idx] >= cirbuf_env[cirbuf_idx_minus1])
-	{
-		cirbuf_env[cirbuf_idx] = cirbuf_hpf[cirbuf_idx];
-	}
-	else
-	{
-		cirbuf_env[cirbuf_idx] = tmp_env;
-	}
+	// Rectify
+	cirbuf_y_rect[cirbuf_idx] = abs(cirbuf_y_rect[cirbuf_idx]);
+
+	// Apply Envelope with LPF
+	float w_n_env = 2 * pi * 500;
+	float alpha_env = w_n_env / (f_s + w_n_env);
+	float one_minus_alpha_env = 1 - alpha_env;
+	cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
+			alpha_env,
+			one_minus_alpha_env,
+			cirbuf_y_rect[cirbuf_idx],
+			cirbuf_y_env[cirbuf_idx_minus_1]);
+
+	// Apply additional HPF for beat detect
+	float w_n_hpf_beat = 2 * pi * 30;
+	float one_minus_alpha_hpf_beat = f_s / (f_s + w_n_hpf);
+	cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
+			one_minus_alpha_hpf_beat,
+			cirbuf_y_env[cirbuf_idx],
+			cirbuf_y_env[cirbuf_idx_minus_1],
+			cirbuf_y_hpf_beat[cirbuf_idx_minus_1]);
 
 	// Store final value
 //	cirbuf_y[cirbuf_idx] = cirbuf_x[cirbuf_idx];
 //	cirbuf_y[cirbuf_idx] = cirbuf_hpf[cirbuf_idx];
-	cirbuf_y[cirbuf_idx] = cirbuf_env[cirbuf_idx];
+//	cirbuf_y[cirbuf_idx] = cirbuf_env[cirbuf_idx];
 
 	// Set PWM duty cycle based on output signal
 //	uint32_t pwm_ccr = ApplyGain(cirbuf_y[cirbuf_idx], pwm_gain, htim2.Init.Period);
-	uint32_t pwm_ccr = (uint32_t)cirbuf_y[cirbuf_idx] * pwm_gain;
-	htim2.Instance->CCR1 = pwm_ccr;
-	cirbuf_pwm[cirbuf_idx] = pwm_ccr;
+//	uint32_t pwm_ccr = (uint32_t)cirbuf_y[cirbuf_idx] * pwm_gain;
+//	htim2.Instance->CCR1 = pwm_ccr;
+//	cirbuf_pwm[cirbuf_idx] = pwm_ccr;
 
 //	// Toggle the Green LED
 //	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
 	// Increment circular buffer index to store next read from ADC
-	cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
+//	cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
 
 #if DEBUG_CAPTURE
 	// Save current sample data to capture arrays
@@ -261,17 +239,17 @@ int main(void)
   f_s = 1 / T_s;
 
   // Define variables used for HPF
-  f_cutoff_hpf = 5000.0f;
-  w_cutoff_hpf = (f_cutoff_hpf * 2 * 3.1415);
+//  f_cutoff_hpf = 5000.0f;
+//  w_cutoff_hpf = (f_cutoff_hpf * 2 * 3.1415);
 
   // Define constants used for envelope function
-  f_cutoff_env = 0.5f;
-  w_cutoff_env = f_cutoff_env * 2.0 * 3.1415;
-  env_coef1 = w_cutoff_env / (f_s + w_cutoff_env);
-  env_coef2 = f_s / (f_s + w_cutoff_env);
+//  f_cutoff_env = 0.5f;
+//  w_cutoff_env = f_cutoff_env * 2.0 * 3.1415;
+//  env_coef1 = w_cutoff_env / (f_s + w_cutoff_env);
+//  env_coef2 = f_s / (f_s + w_cutoff_env);
 
   // Define constants used for PWM generation
-  pwm_gain = 2;
+//  pwm_gain = 2;
 
   // calibrate ADC for better accuracy and start it w/ interrupt
   if(HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK)
