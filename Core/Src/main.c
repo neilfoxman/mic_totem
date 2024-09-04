@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdlib.h>
 #include <stdio.h>
+#include <math.h>
 #include "cirbuf.h"
 
 /* USER CODE END Includes */
@@ -104,7 +105,7 @@ static void MX_ADC1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+// This callback is called whenever the ADC completes a conversion.
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	// Get indexes of nearby values for difference equations
@@ -124,10 +125,22 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 			cirbuf_y_hpf[cirbuf_idx_minus_1]);
 
 	// Rectify
-	cirbuf_y_rect[cirbuf_idx] = abs(cirbuf_y_rect[cirbuf_idx]);
+	cirbuf_y_rect[cirbuf_idx] = fabs(cirbuf_y_hpf[cirbuf_idx]);
+
+	// Apply very slow LPF to determine intensity
+	float tau_intensity = 10;
+	float w_n_intensity = 1 / tau_intensity;
+	float alpha_intensity = w_n_intensity / (f_s + w_n_intensity);
+	float one_minus_alpha_intensity = 1 - alpha_intensity;
+	cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceLPF(
+			alpha_intensity,
+			one_minus_alpha_intensity,
+			cirbuf_y_rect[cirbuf_idx],
+			cirbuf_intensity[cirbuf_idx_minus_1]);
 
 	// Apply Envelope with LPF
-	float w_n_env = 2 * pi * 500;
+	float tau_env = 0.25;
+	float w_n_env = 1 / tau_env;
 	float alpha_env = w_n_env / (f_s + w_n_env);
 	float one_minus_alpha_env = 1 - alpha_env;
 	cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
@@ -138,29 +151,23 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 
 	// Apply additional HPF for beat detect
 	float w_n_hpf_beat = 2 * pi * 30;
-	float one_minus_alpha_hpf_beat = f_s / (f_s + w_n_hpf);
+	float one_minus_alpha_hpf_beat = f_s / (f_s + w_n_hpf_beat);
 	cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
 			one_minus_alpha_hpf_beat,
 			cirbuf_y_env[cirbuf_idx],
 			cirbuf_y_env[cirbuf_idx_minus_1],
 			cirbuf_y_hpf_beat[cirbuf_idx_minus_1]);
 
-	// Store final value
-//	cirbuf_y[cirbuf_idx] = cirbuf_x[cirbuf_idx];
-//	cirbuf_y[cirbuf_idx] = cirbuf_hpf[cirbuf_idx];
-//	cirbuf_y[cirbuf_idx] = cirbuf_env[cirbuf_idx];
-
 	// Set PWM duty cycle based on output signal
-//	uint32_t pwm_ccr = ApplyGain(cirbuf_y[cirbuf_idx], pwm_gain, htim2.Init.Period);
-//	uint32_t pwm_ccr = (uint32_t)cirbuf_y[cirbuf_idx] * pwm_gain;
-//	htim2.Instance->CCR1 = pwm_ccr;
-//	cirbuf_pwm[cirbuf_idx] = pwm_ccr;
+	uint32_t pwm_gain = 1;
+	uint32_t pwm_ccr = (uint32_t)cirbuf_y_hpf_beat[cirbuf_idx] * pwm_gain;
+	htim2.Instance->CCR1 = pwm_ccr;
 
 //	// Toggle the Green LED
 //	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
 	// Increment circular buffer index to store next read from ADC
-//	cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
+	cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
 
 #if DEBUG_CAPTURE
 	// Save current sample data to capture arrays
@@ -350,6 +357,11 @@ static void MX_ADC1_Init(void)
   ADC_ChannelConfTypeDef sConfig = {0};
 
   /* USER CODE BEGIN ADC1_Init 1 */
+  /*
+   * The ADC is configured to be triggered by the Timer2 TRGO event.
+   * See STMF302xxx reference manual 15.3.18 for details on how the
+   * EXTSEL bits are configured to achieve this.
+   */
 
   /* USER CODE END ADC1_Init 1 */
 
@@ -409,12 +421,24 @@ static void MX_TIM2_Init(void)
   TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
+  /*
+   * Code below is used to configure the timer.  The timer counter is in upcounting mode.
+   *
+   * When the Auto-reload value (Period value in this code) is reached, an update event is generated.
+   * The configuration below also leverages the Master-Slave configuration so that the update
+   * event also serves as an externally facing TRGO event.  That TRGO event is then used to
+   * initiate ADC conversions.
+   *
+   * This configuration section also configures the timer for PWM. The lowest section sets
+   * the polarity of the output on TIM_CHANNEL_1, and PWM duty cycle is set by the CCR value
+   * which is modulated in the main code.
+   */
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 1000;
+  htim2.Init.Period = 10000;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
