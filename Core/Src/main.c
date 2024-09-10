@@ -58,7 +58,7 @@ float f_s;
 float pi = 3.1415;
 
 // Declare variable used for DMA transfers
-uint32_t adc_val;
+uint16_t adc_val[5];
 
 // Define circular buffers used for DSP.
 #define CIRBUF_LEN 5
@@ -105,15 +105,17 @@ static void MX_ADC1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// This callback is called whenever the ADC completes a conversion.
+// Follow the References for this callback to determine when it is called.
+// It's a bit roundabout as it is called in the DMA interrupt which is called
+// at the end of DMA transfer.
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	// Get indexes of nearby values for difference equations
 	uint8_t cirbuf_idx_minus_1 = ArrayIdxToCirBufIdx(cirbuf_idx, -1, CIRBUF_LEN);
 //	uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
 
-	// Save ADC read to circular buffer
-	cirbuf_mic[cirbuf_idx] = adc_val;
+	// Save ADC mic read to circular buffer
+	cirbuf_mic[cirbuf_idx] = adc_val[0];
 
 	// Apply HPF
 	float w_n_hpf = 2 * pi * 30;
@@ -268,7 +270,7 @@ int main(void)
 //  if(HAL_ADC_Start_IT(&hadc1) != HAL_OK)
 //                Error_Handler();
 
-  if(HAL_ADC_Start_DMA(&hadc1, &adc_val, 1) != HAL_OK)
+  if(HAL_ADC_Start_DMA(&hadc1, adc_val, 5) != HAL_OK)
                 Error_Handler();
 
 
@@ -370,13 +372,13 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T2_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 5;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
@@ -394,6 +396,42 @@ static void MX_ADC1_Init(void)
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = ADC_REGULAR_RANK_4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = ADC_REGULAR_RANK_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
