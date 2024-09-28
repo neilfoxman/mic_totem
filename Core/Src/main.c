@@ -260,28 +260,27 @@ int main(void)
   // Define constants used for PWM generation
 //  pwm_gain = 2;
 
-  // calibrate ADC for better accuracy and start it w/ interrupt
-  LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
-  while(LL_ADC_IsCalibrationOnGoing(ADC1)){
-	  LL_mDelay(100);
-  }
 
-  // Start ADC
-  LL_ADC_Enable(ADC1);
+	// Configure DMA beyond what is specified in MX_ADC1_Init()
+	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
+	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_val);
+	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, ADC1->DR);
 
-  if(HAL_ADC_Start_DMA(&hadc1, adc_val, 5) != HAL_OK)
-                Error_Handler();
+	// Calibrate ADC for better accuracy
+    LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
+    while(LL_ADC_IsCalibrationOnGoing(ADC1)){
+  	  LL_mDelay(100);
+    }
+
+	// Start ADC
+	LL_ADC_Enable(ADC1);
+	LL_ADC_REG_StartConversion(ADC1);
 
 
 
   // Start TIM
-//  if(HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
-//  if(HAL_TIM_Base_Start(&htim2) != HAL_OK)
-  if(HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
-                Error_Handler();
-
-
-
+	LL_TIM_EnableUpdateEvent(TIM2);
+	LL_TIM_EnableCounter(TIM2);
 
   /* USER CODE END 2 */
 
@@ -347,6 +346,11 @@ static void MX_ADC1_Init(void)
 {
 
   /* USER CODE BEGIN ADC1_Init 0 */
+  /*
+   * The ADC is configured to be triggered by the Timer2 TRGO event.
+   * See STMF302xxx reference manual 15.3.18 for details on how the
+   * EXTSEL bits are configured to achieve this.
+   */
 
   /* USER CODE END ADC1_Init 0 */
 
@@ -400,11 +404,7 @@ static void MX_ADC1_Init(void)
   NVIC_EnableIRQ(ADC1_IRQn);
 
   /* USER CODE BEGIN ADC1_Init 1 */
-  /*
-   * The ADC is configured to be triggered by the Timer2 TRGO event.
-   * See STMF302xxx reference manual 15.3.18 for details on how the
-   * EXTSEL bits are configured to achieve this.
-   */
+
 
   /* USER CODE END ADC1_Init 1 */
 
