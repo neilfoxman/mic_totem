@@ -32,6 +32,18 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+// Used const instead, see below.
+//#define ADC1_ISR_CLEAR_MASK \
+//		((ADC_ISR_JQOVF) | \
+//		(ADC_ISR_AWD3) | \
+//		(ADC_ISR_AWD2) | \
+//		(ADC_ISR_AWD1) | \
+//		(ADC_ISR_JEOS) | \
+//		(ADC_ISR_JEOC) | \
+//		(ADC_ISR_OVR) | \
+//		(ADC_ISR_EOS) | \
+//		(ADC_ISR_EOC))
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -41,6 +53,18 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+
+uint32_t interrupt_cnt = 0;
+const uint32_t adc1_isr_clear_mask =
+	ADC_ISR_JQOVF |
+	ADC_ISR_AWD3 |
+	ADC_ISR_AWD2 |
+	ADC_ISR_AWD1 |
+	ADC_ISR_JEOS |
+	ADC_ISR_JEOC |
+	ADC_ISR_OVR |
+	ADC_ISR_EOS |
+	ADC_ISR_EOC;
 
 /* USER CODE END PV */
 
@@ -204,11 +228,17 @@ void SysTick_Handler(void)
 void DMA1_Channel1_IRQHandler(void)
 {
   /* USER CODE BEGIN DMA1_Channel1_IRQn 0 */
+	/*
+	 * By the time this interrupt is called, all ADC read values have been moved to memory using DMA.
+	 * proc_time_variables may be used to measure DSP times.
+	 */
+	uint32_t proc_time_start = TIM2->CNT;
+//	calc_after_DMA_xfer();
+	uint32_t proc_time_end = TIM2->CNT;
 
   /* USER CODE END DMA1_Channel1_IRQn 0 */
 
   /* USER CODE BEGIN DMA1_Channel1_IRQn 1 */
-	calc_after_DMA_xfer();
 
   /* USER CODE END DMA1_Channel1_IRQn 1 */
 }
@@ -219,6 +249,18 @@ void DMA1_Channel1_IRQHandler(void)
 void ADC1_IRQHandler(void)
 {
   /* USER CODE BEGIN ADC1_IRQn 0 */
+	/*
+	 * This region only gets called if ADC interrupt is enabled in main()
+	 * ADC is configured to generate DMA requests in hardware, so for fastest
+	 * performance, disable it in main().
+	 * Code is left here for debugging only.
+	 */
+
+	// Clear a flags by writing 1
+	WRITE_REG(ADC1->ISR, adc1_isr_clear_mask);
+
+	proc_time = TIM2->CNT;
+	interrupt_cnt++;
 
   /* USER CODE END ADC1_IRQn 0 */
   /* USER CODE BEGIN ADC1_IRQn 1 */
@@ -232,6 +274,19 @@ void ADC1_IRQHandler(void)
 void TIM2_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM2_IRQn 0 */
+	/*
+	 * This region only gets called if TIM2 interrupt is enabled in main()
+	 * TIM2 is configured to generate TRGO signals which the ADC is configured
+	 * to use as a conversion start trigger.
+	 * For fastest performance, disable it in main().
+	 * Code is left here for debugging only.
+	 */
+	// Clear all flags
+	CLEAR_REG(TIM2->SR);
+
+//	proc_time = TIM2->CNT;
+//	uint32_t interrupt_cnt_final = interrupt_cnt;
+//	interrupt_cnt = 0;
 
   /* USER CODE END TIM2_IRQn 0 */
   /* USER CODE BEGIN TIM2_IRQn 1 */

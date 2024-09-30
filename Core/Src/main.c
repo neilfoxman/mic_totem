@@ -69,6 +69,7 @@ uint32_t cirbuf_pwm;
 
 uint32_t proc_time;
 
+
 // Flag used to capture a number of samples for offline debug
 #define DEBUG_CAPTURE 0
 
@@ -90,7 +91,6 @@ uint32_t cnt_capture = 0;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
-static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
@@ -238,33 +238,21 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
-  // Define Sample Frequency
-  T_s = (float)LL_TIM_GetAutoReload(TIM2) / 64E6;
-  f_s = 1 / T_s;
-
-  // Define variables used for HPF
-//  f_cutoff_hpf = 5000.0f;
-//  w_cutoff_hpf = (f_cutoff_hpf * 2 * 3.1415);
-
-  // Define constants used for envelope function
-//  f_cutoff_env = 0.5f;
-//  w_cutoff_env = f_cutoff_env * 2.0 * 3.1415;
-//  env_coef1 = w_cutoff_env / (f_s + w_cutoff_env);
-//  env_coef2 = f_s / (f_s + w_cutoff_env);
-
-  // Define constants used for PWM generation
-//  pwm_gain = 2;
-
+	// Define Sample Frequency
+	T_s = (float)LL_TIM_GetAutoReload(TIM2) / 64E6;
+	f_s = 1 / T_s;
 
 	// Configure DMA beyond what is specified in MX_ADC1_Init()
 	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
 	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_val);
 	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, ADC1->DR);
+	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1);
+	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
 
 	// Calibrate ADC for better accuracy
     LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
@@ -274,19 +262,18 @@ int main(void)
 
 	// Start ADC
 	LL_ADC_Enable(ADC1);
+//	LL_ADC_EnableIT_EOS(ADC1); // Enable Interrupt for debugging
 	LL_ADC_REG_StartConversion(ADC1);
 
-
-
   // Start TIM
-	LL_TIM_EnableUpdateEvent(TIM2);
+//	LL_TIM_EnableUpdateEvent(TIM2); // Unnecessary - default is enabled
+//	LL_TIM_EnableIT_UPDATE(TIM2); // Enable Interrupt for debugging
 	LL_TIM_EnableCounter(TIM2);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  return 0;
   while (1)
   {
     /* USER CODE END WHILE */
@@ -516,7 +503,7 @@ static void MX_TIM2_Init(void)
   /* USER CODE END TIM2_Init 1 */
   TIM_InitStruct.Prescaler = 0;
   TIM_InitStruct.CounterMode = LL_TIM_COUNTERMODE_UP;
-  TIM_InitStruct.Autoreload = 1500;
+  TIM_InitStruct.Autoreload = 15000;
   TIM_InitStruct.ClockDivision = LL_TIM_CLOCKDIVISION_DIV1;
   LL_TIM_Init(TIM2, &TIM_InitStruct);
   LL_TIM_DisableARRPreload(TIM2);
@@ -545,58 +532,6 @@ static void MX_TIM2_Init(void)
   GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
   GPIO_InitStruct.Alternate = LL_GPIO_AF_1;
   LL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-}
-
-/**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  LL_USART_InitTypeDef USART_InitStruct = {0};
-
-  LL_GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  /* Peripheral clock enable */
-  LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_USART2);
-
-  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOA);
-  /**USART2 GPIO Configuration
-  PA2   ------> USART2_TX
-  PA3   ------> USART2_RX
-  */
-  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
-  GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-  GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
-  GPIO_InitStruct.Alternate = LL_GPIO_AF_7;
-  LL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  USART_InitStruct.BaudRate = 115200;
-  USART_InitStruct.DataWidth = LL_USART_DATAWIDTH_8B;
-  USART_InitStruct.StopBits = LL_USART_STOPBITS_1;
-  USART_InitStruct.Parity = LL_USART_PARITY_NONE;
-  USART_InitStruct.TransferDirection = LL_USART_DIRECTION_TX_RX;
-  USART_InitStruct.HardwareFlowControl = LL_USART_HWCONTROL_NONE;
-  USART_InitStruct.OverSampling = LL_USART_OVERSAMPLING_16;
-  LL_USART_Init(USART2, &USART_InitStruct);
-  LL_USART_DisableIT_CTS(USART2);
-  LL_USART_ConfigAsyncMode(USART2);
-  LL_USART_Enable(USART2);
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
 
 }
 
@@ -654,6 +589,15 @@ static void MX_GPIO_Init(void)
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
   EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_FALLING;
   LL_EXTI_Init(&EXTI_InitStruct);
+
+  /**/
+  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
+  GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
+  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
+  GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
+  GPIO_InitStruct.Alternate = LL_GPIO_AF_7;
+  LL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /**/
   GPIO_InitStruct.Pin = LD2_Pin;
