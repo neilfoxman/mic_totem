@@ -46,43 +46,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-// Declare Sample Frequency
-float T_s;
-float f_s;
-float pi = 3.1415;
-
-// Declare variable used for DMA transfers
-uint16_t adc_val[5];
-
-// Define circular buffers used for DSP.
-#define CIRBUF_LEN 5
-uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffer
-float cirbuf_mic[CIRBUF_LEN];
-float cirbuf_y_hpf[CIRBUF_LEN];
-float cirbuf_y_rect[CIRBUF_LEN];
-float cirbuf_y_env[CIRBUF_LEN];
-float cirbuf_y_hpf_beat[CIRBUF_LEN];
-
-float cirbuf_intensity[CIRBUF_LEN];
-
-uint32_t cirbuf_pwm;
-
-uint32_t proc_time;
-
-
-// Flag used to capture a number of samples for offline debug
-#define DEBUG_CAPTURE 0
-
-// Arrays to store recorded outputs for debugging
-#if DEBUG_CAPTURE
-#define DEBUG_NUM_SAMPLES 256
-float x_capture[DEBUG_NUM_SAMPLES];
-//float hpf_capture[DEBUG_NUM_SAMPLES];
-//float y_capture[DEBUG_NUM_SAMPLES];
-uint32_t pwm_capture[DEBUG_NUM_SAMPLES];
-uint32_t proc_time_capture[DEBUG_NUM_SAMPLES];
-uint32_t cnt_capture = 0;
-#endif
 
 
 /* USER CODE END PV */
@@ -99,9 +62,96 @@ static void MX_ADC1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// Follow the References for this callback to determine when it is called.
-// It's a bit roundabout as it is called in the DMA interrupt which is called
-// at the end of DMA transfer.
+
+// State variable used to transition to different states
+enum {
+	MIC_DSP,
+	LED_OUT
+} op_state;
+
+// External variable used for tracking how long certain processes take to complete
+uint32_t proc_time;
+
+// Declare Sample Frequency, To be calculated later by getting timer register value
+float T_s;
+float f_s;
+float pi = 3.1415;
+
+// Declare array used for DMA transfers.  Array length represents how many ADC channels will sample.
+uint16_t adc_val[5];
+
+// Define circular buffers used for DSP.
+#define CIRBUF_LEN 5
+uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
+float cirbuf_mic[CIRBUF_LEN];
+
+// Incoming signal HPF
+float cirbuf_y_hpf[CIRBUF_LEN];
+float f_n_hpf = 30;
+float w_n_hpf;
+float one_minus_alpha_hpf;
+
+// Rectified signal
+float cirbuf_y_rect[CIRBUF_LEN];
+
+// Intensity signal (slow LPF envelope filter)
+float cirbuf_intensity[CIRBUF_LEN];
+float tau_intensity = 10;
+float w_n_intensity;
+float alpha_intensity ;
+float one_minus_alpha_intensity;
+uint32_t intensity;
+
+// Transient capturing envelope filter
+float cirbuf_y_env[CIRBUF_LEN];
+float tau_env = 0.25;
+float w_n_env;
+float alpha_env;
+float one_minus_alpha_env;
+
+// Apply additional HPF for beat detect
+float cirbuf_y_hpf_beat[CIRBUF_LEN];
+float f_n_hpf_beat = 30;
+float w_n_hpf_beat;
+float one_minus_alpha_hpf_beat;
+float transient_thresh = 10;
+uint32_t transient_cnt = 0;
+
+
+/*
+ * Initialize constant parameters usd in DSP loop to speed up processing time.
+ * Potential gains are on the order of ~175 counts (2.7 us)
+ */
+void calc_DSP_constants(void)
+{
+	// Define Sample Frequency
+	T_s = (float)LL_TIM_GetAutoReload(TIM2) / 64E6;
+	f_s = 1 / T_s;
+
+	// Incoming signal HPF
+	w_n_hpf = 2 * pi * f_n_hpf;
+	one_minus_alpha_hpf = f_s / (f_s + w_n_hpf);
+
+	// Rectified signal
+
+	// Intensity signal (slow LPF envelope filter)
+	w_n_intensity = 1 / tau_intensity;
+	alpha_intensity = w_n_intensity / (f_s + w_n_intensity);
+	one_minus_alpha_intensity = 1 - alpha_intensity;
+
+	// Transient capturing envelope filter
+	w_n_env = 1 / tau_env;
+	alpha_env = w_n_env / (f_s + w_n_env);
+	one_minus_alpha_env = 1 - alpha_env;
+
+	// Apply additional HPF for beat detect
+	w_n_hpf_beat = 2 * pi * f_n_hpf_beat;
+	one_minus_alpha_hpf_beat = f_s / (f_s + w_n_hpf_beat);
+}
+
+/*
+ * Call this function periodically to perform signal processing on collected mic data
+ */
 void calc_after_DMA_xfer(void)
 {
 	// Get indexes of nearby values for difference equations
@@ -112,8 +162,6 @@ void calc_after_DMA_xfer(void)
 	cirbuf_mic[cirbuf_idx] = adc_val[0];
 
 	// Apply HPF
-	float w_n_hpf = 2 * pi * 30;
-	float one_minus_alpha_hpf = f_s / (f_s + w_n_hpf);
 	cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
 			one_minus_alpha_hpf,
 			cirbuf_mic[cirbuf_idx],
@@ -123,82 +171,36 @@ void calc_after_DMA_xfer(void)
 	// Rectify
 	cirbuf_y_rect[cirbuf_idx] = fabs(cirbuf_y_hpf[cirbuf_idx]);
 
-	// Apply very slow LPF to determine intensity
-	float tau_intensity = 10;
-	float w_n_intensity = 1 / tau_intensity;
-	float alpha_intensity = w_n_intensity / (f_s + w_n_intensity);
-	float one_minus_alpha_intensity = 1 - alpha_intensity;
+	// Determine Intensity
 	cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceLPF(
 			alpha_intensity,
 			one_minus_alpha_intensity,
 			cirbuf_y_rect[cirbuf_idx],
 			cirbuf_intensity[cirbuf_idx_minus_1]);
+	intensity = cirbuf_intensity[cirbuf_idx];
 
-	// Apply Envelope with LPF
-	float tau_env = 0.25;
-	float w_n_env = 1 / tau_env;
-	float alpha_env = w_n_env / (f_s + w_n_env);
-	float one_minus_alpha_env = 1 - alpha_env;
+	// Transient Envelope
 	cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
 			alpha_env,
 			one_minus_alpha_env,
 			cirbuf_y_rect[cirbuf_idx],
 			cirbuf_y_env[cirbuf_idx_minus_1]);
 
-	// Apply additional HPF for beat detect
-	float w_n_hpf_beat = 2 * pi * 30;
-	float one_minus_alpha_hpf_beat = f_s / (f_s + w_n_hpf_beat);
+	// Beat Detect HPF
 	cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
 			one_minus_alpha_hpf_beat,
 			cirbuf_y_env[cirbuf_idx],
 			cirbuf_y_env[cirbuf_idx_minus_1],
 			cirbuf_y_hpf_beat[cirbuf_idx_minus_1]);
 
-	// Set PWM duty cycle based on output signal
-	uint32_t pwm_gain = 1;
-	uint32_t pwm_ccr = (uint32_t)cirbuf_y_hpf_beat[cirbuf_idx] * pwm_gain;
-	LL_TIM_OC_SetCompareCH1(TIM2, pwm_ccr);
-//	htim2.Instance->CCR1 = pwm_ccr;
-
-//	// Toggle the Green LED
-//	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-
-	// Increment circular buffer index to store next read from ADC
-	cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
-
-#if DEBUG_CAPTURE
-	// Save current sample data to capture arrays
-	x_capture[cnt_capture] = cirbuf_x[cirbuf_idx];
-//	hpf_capture[cnt_capture] = cirbuf_hpf[cirbuf_idx];
-//	y_capture[cnt_capture] = cirbuf_y[cirbuf_idx];
-	pwm_capture[cnt_capture] = cirbuf_pwm[cirbuf_idx];
-
-	// Increment capture sample counter
-	cnt_capture += 1;
-#endif
-
-	// Save counter indicating how long it took to get here
-	proc_time = LL_TIM_GetCounter(TIM2);
-//	proc_time = htim2.Instance->CNT;
-
-#if DEBUG_CAPTURE
-	// Capture processing time as well
-	proc_time_capture[cnt_capture] = proc_time;
-
-	// If we have captured all the samples needed for this run, stop cycle and print info over serial
-	if (cnt_capture >= DEBUG_NUM_SAMPLES)
+	// Beat detect threshold
+	if (cirbuf_y_hpf_beat[cirbuf_idx] > transient_thresh)
 	{
-		HAL_ADC_Stop_DMA(&hadc1);
-		for (uint32_t idx = 0; idx < DEBUG_NUM_SAMPLES; idx += 1){
-			uint8_t row_text[30] = "";
-			sprintf((char*)row_text, "%.3f,%lu,%lu\r\n", \
-					x_capture[idx], pwm_capture[idx], (uint32_t)proc_time_capture[idx]);
-			HAL_UART_Transmit(&huart2, row_text, sizeof(row_text), HAL_MAX_DELAY);
-		}
-		uint8_t end_msg[5] = "END\r\n";
-		HAL_UART_Transmit(&huart2, end_msg, sizeof(end_msg), HAL_MAX_DELAY);
+		transient_cnt++;
 	}
-#endif
+
+	// FINAL: Increment circular buffer index to store next read from ADC
+	cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
 }
 
 
@@ -242,9 +244,8 @@ int main(void)
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
-	// Define Sample Frequency
-	T_s = (float)LL_TIM_GetAutoReload(TIM2) / 64E6;
-	f_s = 1 / T_s;
+	// Calculate all constants used for DSP
+	calc_DSP_constants();
 
 	// Configure DMA beyond what is specified in MX_ADC1_Init()
 	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
@@ -263,7 +264,7 @@ int main(void)
 	// Start ADC
 	LL_ADC_Enable(ADC1);
 //	LL_ADC_EnableIT_EOS(ADC1); // Enable Interrupt for debugging
-	LL_ADC_EnableIT_OVR(ADC1); // Enable Overrun interrupt
+//	LL_ADC_EnableIT_OVR(ADC1); // Enable Overrun interrupt
 	LL_ADC_REG_StartConversion(ADC1);
 
   // Start TIM
@@ -476,9 +477,6 @@ static void MX_TIM2_Init(void)
   /* USER CODE END TIM2_Init 0 */
 
   LL_TIM_InitTypeDef TIM_InitStruct = {0};
-  LL_TIM_OC_InitTypeDef TIM_OC_InitStruct = {0};
-
-  LL_GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* Peripheral clock enable */
   LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM2);
@@ -509,30 +507,11 @@ static void MX_TIM2_Init(void)
   LL_TIM_Init(TIM2, &TIM_InitStruct);
   LL_TIM_DisableARRPreload(TIM2);
   LL_TIM_SetClockSource(TIM2, LL_TIM_CLOCKSOURCE_INTERNAL);
-  LL_TIM_OC_EnablePreload(TIM2, LL_TIM_CHANNEL_CH1);
-  TIM_OC_InitStruct.OCMode = LL_TIM_OCMODE_PWM1;
-  TIM_OC_InitStruct.OCState = LL_TIM_OCSTATE_DISABLE;
-  TIM_OC_InitStruct.OCNState = LL_TIM_OCSTATE_DISABLE;
-  TIM_OC_InitStruct.CompareValue = 0;
-  TIM_OC_InitStruct.OCPolarity = LL_TIM_OCPOLARITY_HIGH;
-  LL_TIM_OC_Init(TIM2, LL_TIM_CHANNEL_CH1, &TIM_OC_InitStruct);
-  LL_TIM_OC_DisableFast(TIM2, LL_TIM_CHANNEL_CH1);
   LL_TIM_SetTriggerOutput(TIM2, LL_TIM_TRGO_UPDATE);
   LL_TIM_DisableMasterSlaveMode(TIM2);
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOA);
-  /**TIM2 GPIO Configuration
-  PA5   ------> TIM2_CH1
-  */
-  GPIO_InitStruct.Pin = LL_GPIO_PIN_5;
-  GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-  GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
-  GPIO_InitStruct.Alternate = LL_GPIO_AF_1;
-  LL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
 }
 

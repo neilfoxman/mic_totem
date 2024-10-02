@@ -240,8 +240,16 @@ void DMA1_Channel1_IRQHandler(void)
 //		DMA_Channel_TypeDef * dma1_ch1 = DMA1_Channel1; // For debugging
 		SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1);
 	}
-	proc_time = TIM2->CNT;
+
+	// Processing time for debugging.
+//	proc_time = TIM2->CNT;
+	// It takes ~135 counts (~2.1 us) to get here (TIM2 and ADC1 at 64 MHz, 5 ADC channels)
+
+	// Process data
 	calc_after_DMA_xfer();
+
+	// Capture time at end of processing for setting good sample frequency
+	proc_time = TIM2->CNT;
 
   /* USER CODE END DMA1_Channel1_IRQn 0 */
 
