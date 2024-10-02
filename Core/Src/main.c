@@ -249,7 +249,7 @@ int main(void)
 	// Configure DMA beyond what is specified in MX_ADC1_Init()
 	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
 	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_val);
-	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, ADC1->DR);
+	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)&ADC1->DR );
 	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1);
 	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
 
@@ -263,6 +263,7 @@ int main(void)
 	// Start ADC
 	LL_ADC_Enable(ADC1);
 //	LL_ADC_EnableIT_EOS(ADC1); // Enable Interrupt for debugging
+	LL_ADC_EnableIT_OVR(ADC1); // Enable Overrun interrupt
 	LL_ADC_REG_StartConversion(ADC1);
 
   // Start TIM

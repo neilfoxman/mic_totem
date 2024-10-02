@@ -33,16 +33,18 @@
 /* USER CODE BEGIN PD */
 
 // Used const instead, see below.
-//#define ADC1_ISR_CLEAR_MASK \
-//		((ADC_ISR_JQOVF) | \
-//		(ADC_ISR_AWD3) | \
-//		(ADC_ISR_AWD2) | \
-//		(ADC_ISR_AWD1) | \
-//		(ADC_ISR_JEOS) | \
-//		(ADC_ISR_JEOC) | \
-//		(ADC_ISR_OVR) | \
-//		(ADC_ISR_EOS) | \
-//		(ADC_ISR_EOC))
+/*
+#define ADC1_ISR_CLEAR_MASK \
+		((ADC_ISR_JQOVF) | \
+		(ADC_ISR_AWD3) | \
+		(ADC_ISR_AWD2) | \
+		(ADC_ISR_AWD1) | \
+		(ADC_ISR_JEOS) | \
+		(ADC_ISR_JEOC) | \
+		(ADC_ISR_OVR) | \
+		(ADC_ISR_EOS) | \
+		(ADC_ISR_EOC))
+ */
 
 /* USER CODE END PD */
 
@@ -54,7 +56,6 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
-uint32_t interrupt_cnt = 0;
 const uint32_t adc1_isr_clear_mask =
 	ADC_ISR_JQOVF |
 	ADC_ISR_AWD3 |
@@ -232,9 +233,15 @@ void DMA1_Channel1_IRQHandler(void)
 	 * By the time this interrupt is called, all ADC read values have been moved to memory using DMA.
 	 * proc_time_variables may be used to measure DSP times.
 	 */
-	uint32_t proc_time_start = TIM2->CNT;
-//	calc_after_DMA_xfer();
-	uint32_t proc_time_end = TIM2->CNT;
+
+	// Clear Flag
+	if (DMA1->ISR & DMA_ISR_GIF1)
+	{
+//		DMA_Channel_TypeDef * dma1_ch1 = DMA1_Channel1; // For debugging
+		SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1);
+	}
+	proc_time = TIM2->CNT;
+	calc_after_DMA_xfer();
 
   /* USER CODE END DMA1_Channel1_IRQn 0 */
 
@@ -260,7 +267,7 @@ void ADC1_IRQHandler(void)
 	WRITE_REG(ADC1->ISR, adc1_isr_clear_mask);
 
 	proc_time = TIM2->CNT;
-	interrupt_cnt++;
+
 
   /* USER CODE END ADC1_IRQn 0 */
   /* USER CODE BEGIN ADC1_IRQn 1 */
