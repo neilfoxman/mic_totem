@@ -76,7 +76,7 @@ const uint32_t adc1_isr_clear_mask =
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+uint32_t ovr_cnt;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -270,6 +270,9 @@ void ADC1_IRQHandler(void)
 	 * performance, disable it in main().
 	 * Code is left here for debugging only.
 	 */
+	if (READ_BIT(ADC1->ISR, ADC_ISR_OVR) > 0){
+		ovr_cnt++;
+	}
 
 	// Clear a flags by writing 1
 	WRITE_REG(ADC1->ISR, adc1_isr_clear_mask);
