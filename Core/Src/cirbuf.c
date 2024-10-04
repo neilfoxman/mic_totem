@@ -7,6 +7,8 @@
 
 #include "cirbuf.h"
 
+float pi = 3.1415;
+
 float ArrayIdxToCirBufIdx(
 		uint8_t start_idx,
 		int8_t array_idx,
@@ -19,15 +21,15 @@ float ArrayIdxToCirBufIdx(
 	return (start_idx + array_idx) % cirbuf_len;
 }
 
-float ApplyFirstDifferenceLPF(float alpha, float one_minus_alpha, float x_0, float y_minus_1)
+int32_t ApplyFirstDifferenceLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T)
 {
 	// Reference https://neilfoxman.com/?page_id=1714#First_Difference_Lowpass_Filter
-	return one_minus_alpha * y_minus_1 + alpha * x_0;
+	return (tau_over_T * y_minus_1 + x_0)/(tau_over_T + 1);
 }
 
-float ApplyFirstDifferenceEnvelopeLPF(float alpha, float one_minus_alpha, float x_0, float y_minus_1)
+int32_t ApplyFirstDifferenceEnvelopeLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T)
 {
-	float y_lpf = ApplyFirstDifferenceLPF(alpha, one_minus_alpha, x_0, y_minus_1);
+	int32_t y_lpf = ApplyFirstDifferenceLPF(y_minus_1, x_0, tau_over_T);
 	if (x_0 > y_lpf)
 	{
 		return x_0;
@@ -38,8 +40,13 @@ float ApplyFirstDifferenceEnvelopeLPF(float alpha, float one_minus_alpha, float 
 	}
 }
 
-float ApplyFirstDifferenceHPF(float one_minus_alpha, float x_0, float x_minus_1, float y_minus_1)
+int32_t ApplyFirstDifferenceHPF(int32_t y_minus_1, int32_t x_0, int32_t x_minus_1, int32_t tau_over_T)
 {
 	// Reference https://neilfoxman.com/?page_id=1714#First_Difference_Highpass_Filter
-	return one_minus_alpha * (y_minus_1 + x_0 - x_minus_1);
+	return (tau_over_T*(y_minus_1 + x_0 - x_minus_1)) / (tau_over_T + 1);
+}
+
+int32_t CalcTauOverTFromFloat(float f_n, float f_s)
+{
+	return (uint16_t)(f_s / (2 * pi * f_n));
 }

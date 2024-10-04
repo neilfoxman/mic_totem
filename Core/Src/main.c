@@ -75,47 +75,36 @@ uint32_t proc_time;
 // Declare Sample Frequency, To be calculated later by getting timer register value
 float T_s;
 float f_s;
-float pi = 3.1415;
 
 // Declare array used for DMA transfers.  Array length represents how many ADC channels will sample.
 uint16_t adc_val[5];
 
 // Define circular buffers used for DSP.
-#define CIRBUF_LEN 5
+#define CIRBUF_LEN 3
 uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
-float cirbuf_mic[CIRBUF_LEN];
+int32_t cirbuf_mic[CIRBUF_LEN];
 
 // Incoming signal HPF
-float cirbuf_y_hpf[CIRBUF_LEN];
-float f_n_hpf = 30;
-float w_n_hpf;
-float one_minus_alpha_hpf;
+int32_t cirbuf_y_hpf[CIRBUF_LEN];
+int32_t tau_over_T_y_hpf;
 
 // Rectified signal
-float cirbuf_y_rect[CIRBUF_LEN];
+int32_t cirbuf_y_rect[CIRBUF_LEN];
 
 // Intensity signal (slow LPF envelope filter)
-float cirbuf_intensity[CIRBUF_LEN];
-float tau_intensity = 10;
-float w_n_intensity;
-float alpha_intensity ;
-float one_minus_alpha_intensity;
-uint32_t intensity;
+int32_t cirbuf_intensity[CIRBUF_LEN];
+int32_t tau_over_T_intensity;
+int32_t intensity;
 
 // Transient capturing envelope filter
-float cirbuf_y_env[CIRBUF_LEN];
-float tau_env = 0.25;
-float w_n_env;
-float alpha_env;
-float one_minus_alpha_env;
+int32_t cirbuf_y_env[CIRBUF_LEN];
+int32_t tau_over_T_y_env;
 
 // Apply additional HPF for beat detect
-float cirbuf_y_hpf_beat[CIRBUF_LEN];
-float f_n_hpf_beat = 30;
-float w_n_hpf_beat;
-float one_minus_alpha_hpf_beat;
-float transient_thresh = 10;
-uint32_t transient_cnt = 0;
+int32_t cirbuf_y_hpf_beat[CIRBUF_LEN];
+int32_t tau_over_T_y_hpf_beat;
+int32_t transient_thresh = 20;
+int32_t transient_cnt = 0;
 
 
 /*
@@ -129,24 +118,22 @@ void calc_DSP_constants(void)
 	f_s = 1 / T_s;
 
 	// Incoming signal HPF
-	w_n_hpf = 2 * pi * f_n_hpf;
-	one_minus_alpha_hpf = f_s / (f_s + w_n_hpf);
+	float f_n_hpf = 30;
+	tau_over_T_y_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
 
 	// Rectified signal
 
 	// Intensity signal (slow LPF envelope filter)
-	w_n_intensity = 1 / tau_intensity;
-	alpha_intensity = w_n_intensity / (f_s + w_n_intensity);
-	one_minus_alpha_intensity = 1 - alpha_intensity;
+	float tau_intensity = 10;
+	tau_over_T_intensity = (uint16_t)(tau_intensity / T_s);
 
 	// Transient capturing envelope filter
-	w_n_env = 1 / tau_env;
-	alpha_env = w_n_env / (f_s + w_n_env);
-	one_minus_alpha_env = 1 - alpha_env;
+	float tau_y_env = 0.25;
+	tau_over_T_y_env = (uint16_t)(tau_y_env / T_s);
 
 	// Apply additional HPF for beat detect
-	w_n_hpf_beat = 2 * pi * f_n_hpf_beat;
-	one_minus_alpha_hpf_beat = f_s / (f_s + w_n_hpf_beat);
+	float f_n_hpf_beat = 30;
+	tau_over_T_y_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
 }
 
 /*
@@ -163,35 +150,37 @@ void calc_after_DMA_xfer(void)
 
 	// Apply HPF
 	cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
-			one_minus_alpha_hpf,
-			cirbuf_mic[cirbuf_idx],
-			cirbuf_mic[cirbuf_idx_minus_1],
-			cirbuf_y_hpf[cirbuf_idx_minus_1]);
+		cirbuf_y_hpf[cirbuf_idx_minus_1],
+		cirbuf_mic[cirbuf_idx],
+		cirbuf_mic[cirbuf_idx_minus_1],
+		tau_over_T_y_hpf
+	);
 
 	// Rectify
-	cirbuf_y_rect[cirbuf_idx] = fabs(cirbuf_y_hpf[cirbuf_idx]);
+	cirbuf_y_rect[cirbuf_idx] = abs(cirbuf_y_hpf[cirbuf_idx]);
 
 	// Determine Intensity
 	cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceLPF(
-			alpha_intensity,
-			one_minus_alpha_intensity,
-			cirbuf_y_rect[cirbuf_idx],
-			cirbuf_intensity[cirbuf_idx_minus_1]);
+		cirbuf_intensity[cirbuf_idx_minus_1],
+		cirbuf_y_rect[cirbuf_idx],
+		tau_over_T_intensity
+	);
 	intensity = cirbuf_intensity[cirbuf_idx];
 
 	// Transient Envelope
 	cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
-			alpha_env,
-			one_minus_alpha_env,
-			cirbuf_y_rect[cirbuf_idx],
-			cirbuf_y_env[cirbuf_idx_minus_1]);
+		cirbuf_y_env[cirbuf_idx_minus_1],
+		cirbuf_y_rect[cirbuf_idx],
+		tau_over_T_y_env
+	);
 
 	// Beat Detect HPF
 	cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
-			one_minus_alpha_hpf_beat,
-			cirbuf_y_env[cirbuf_idx],
-			cirbuf_y_env[cirbuf_idx_minus_1],
-			cirbuf_y_hpf_beat[cirbuf_idx_minus_1]);
+		cirbuf_y_hpf_beat[cirbuf_idx_minus_1],
+		cirbuf_y_env[cirbuf_idx],
+		cirbuf_y_env[cirbuf_idx_minus_1],
+		tau_over_T_y_hpf_beat
+	);
 
 	// Beat detect threshold
 	if (cirbuf_y_hpf_beat[cirbuf_idx] > transient_thresh)
@@ -502,7 +491,7 @@ static void MX_TIM2_Init(void)
   /* USER CODE END TIM2_Init 1 */
   TIM_InitStruct.Prescaler = 0;
   TIM_InitStruct.CounterMode = LL_TIM_COUNTERMODE_UP;
-  TIM_InitStruct.Autoreload = 15000;
+  TIM_InitStruct.Autoreload = 1000;
   TIM_InitStruct.ClockDivision = LL_TIM_CLOCKDIVISION_DIV1;
   LL_TIM_Init(TIM2, &TIM_InitStruct);
   LL_TIM_DisableARRPreload(TIM2);
