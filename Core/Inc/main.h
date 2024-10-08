@@ -67,7 +67,6 @@ extern uint32_t proc_time;
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-void calc_after_DMA_xfer(void);
 
 /* USER CODE END EFP */
 

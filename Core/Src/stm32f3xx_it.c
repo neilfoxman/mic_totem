@@ -22,6 +22,7 @@
 #include "stm32f3xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "sm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,20 +32,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
-// Used const instead, see below.
-/*
-#define ADC1_ISR_CLEAR_MASK \
-		((ADC_ISR_JQOVF) | \
-		(ADC_ISR_AWD3) | \
-		(ADC_ISR_AWD2) | \
-		(ADC_ISR_AWD1) | \
-		(ADC_ISR_JEOS) | \
-		(ADC_ISR_JEOC) | \
-		(ADC_ISR_OVR) | \
-		(ADC_ISR_EOS) | \
-		(ADC_ISR_EOC))
- */
 
 /* USER CODE END PD */
 
@@ -56,17 +43,6 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
-const uint32_t adc1_isr_clear_mask =
-	ADC_ISR_JQOVF |
-	ADC_ISR_AWD3 |
-	ADC_ISR_AWD2 |
-	ADC_ISR_AWD1 |
-	ADC_ISR_JEOS |
-	ADC_ISR_JEOC |
-	ADC_ISR_OVR |
-	ADC_ISR_EOS |
-	ADC_ISR_EOC;
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,7 +52,7 @@ const uint32_t adc1_isr_clear_mask =
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint32_t ovr_cnt;
+
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -234,22 +210,8 @@ void DMA1_Channel1_IRQHandler(void)
 	 * proc_time_variables may be used to measure DSP times.
 	 */
 
-	// Clear Flag
-	if (DMA1->ISR & DMA_ISR_GIF1)
-	{
-//		DMA_Channel_TypeDef * dma1_ch1 = DMA1_Channel1; // For debugging
-		SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1);
-	}
-
-	// Processing time for debugging.
-//	proc_time = TIM2->CNT;
-	// It takes ~135 counts (~2.1 us) to get here (TIM2 and ADC1 at 64 MHz, 5 ADC channels)
-
-	// Process data
-	calc_after_DMA_xfer();
-
-	// Capture time at end of processing for setting good sample frequency
-	proc_time = TIM2->CNT;
+	// Issue DMA_COMPLETE event to current state
+	current_state(DMA_COMPLETE);
 
   /* USER CODE END DMA1_Channel1_IRQn 0 */
 
@@ -264,22 +226,10 @@ void DMA1_Channel1_IRQHandler(void)
 void ADC1_IRQHandler(void)
 {
   /* USER CODE BEGIN ADC1_IRQn 0 */
-	/*
-	 * This region only gets called if ADC interrupt is enabled in main()
-	 * ADC is configured to generate DMA requests in hardware, so for fastest
-	 * performance, disable it in main().
-	 * Code is left here for debugging only.
-	 */
+	// Pass overrun event to state machine
 	if (READ_BIT(ADC1->ISR, ADC_ISR_OVR) > 0){
-		ovr_cnt++;
+		current_state(OVR);
 	}
-
-	// Clear a flags by writing 1
-	WRITE_REG(ADC1->ISR, adc1_isr_clear_mask);
-
-	proc_time = TIM2->CNT;
-
-
   /* USER CODE END ADC1_IRQn 0 */
   /* USER CODE BEGIN ADC1_IRQn 1 */
 
@@ -295,12 +245,13 @@ void TIM2_IRQHandler(void)
 	/*
 	 * This region only gets called if TIM2 interrupt is enabled in main()
 	 * TIM2 is configured to generate TRGO signals which the ADC is configured
-	 * to use as a conversion start trigger.
-	 * For fastest performance, disable it in main().
-	 * Code is left here for debugging only.
+	 * to use as a conversion start trigger (not in this handler).
 	 */
 	// Clear all flags
 	CLEAR_REG(TIM2->SR);
+
+	// Dispatch Update event to current state
+	current_state(TIM_UE);
 
 //	proc_time = TIM2->CNT;
 //	uint32_t interrupt_cnt_final = interrupt_cnt;
