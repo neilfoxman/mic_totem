@@ -207,17 +207,41 @@ void DMA1_Channel1_IRQHandler(void)
   /* USER CODE BEGIN DMA1_Channel1_IRQn 0 */
 	/*
 	 * By the time this interrupt is called, all ADC read values have been moved to memory using DMA.
-	 * proc_time_variables may be used to measure DSP times.
 	 */
 
-	// Issue DMA_COMPLETE event to current state
-	current_state(DMA_COMPLETE);
+	// Clear Global Flag for ADC channel
+	SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1);
+
+	// Issue MIC_DMA_COMPLETE event to current state
+	current_state(MIC_DMA_COMPLETE);
 
   /* USER CODE END DMA1_Channel1_IRQn 0 */
 
   /* USER CODE BEGIN DMA1_Channel1_IRQn 1 */
 
   /* USER CODE END DMA1_Channel1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA1 channel5 global interrupt.
+  */
+void DMA1_Channel5_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel5_IRQn 0 */
+	/*
+	 * This interrupt is called when all LEDs have been written to.
+	 */
+	// Clear Global Flag for ADC channel
+	SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF5);
+
+	// Issue LED_DMA_COMPLETE event to current state
+	current_state(LED_DMA_COMPLETE);
+
+  /* USER CODE END DMA1_Channel5_IRQn 0 */
+
+  /* USER CODE BEGIN DMA1_Channel5_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel5_IRQn 1 */
 }
 
 /**
@@ -228,7 +252,8 @@ void ADC1_IRQHandler(void)
   /* USER CODE BEGIN ADC1_IRQn 0 */
 	// Pass overrun event to state machine
 	if (READ_BIT(ADC1->ISR, ADC_ISR_OVR) > 0){
-		current_state(OVR);
+		CLEAR_BIT(ADC1->ISR, ADC_ISR_OVR);
+		current_state(ADC_OVR);
 	}
   /* USER CODE END ADC1_IRQn 0 */
   /* USER CODE BEGIN ADC1_IRQn 1 */
@@ -252,10 +277,6 @@ void TIM2_IRQHandler(void)
 
 	// Dispatch Update event to current state
 	current_state(TIM_UE);
-
-//	proc_time = TIM2->CNT;
-//	uint32_t interrupt_cnt_final = interrupt_cnt;
-//	interrupt_cnt = 0;
 
   /* USER CODE END TIM2_IRQn 0 */
   /* USER CODE BEGIN TIM2_IRQn 1 */

@@ -78,42 +78,6 @@ const uint32_t adc1_isr_clear_mask =
 // External variable used for tracking how long certain processes take to complete
 uint32_t proc_time;
 
-// Declare Sample Frequency, To be calculated later by getting timer register value
-float T_s;
-float f_s;
-
-// Declare ADC read variables
-uint16_t adc_reads[5];
-uint16_t mic_read;
-
-// Define circular buffers used for DSP.
-#define CIRBUF_LEN 3
-uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
-int32_t cirbuf_mic[CIRBUF_LEN];
-
-// Incoming signal HPF
-int32_t cirbuf_y_hpf[CIRBUF_LEN];
-int32_t tau_over_T_y_hpf;
-
-// Rectified signal
-int32_t cirbuf_y_rect[CIRBUF_LEN];
-
-// Intensity signal (slow LPF envelope filter)
-// Intensity needs to be done in float math due to high tau/T relative to x[n]
-float cirbuf_intensity[CIRBUF_LEN];
-float tau_over_T_intensity;
-int32_t intensity;
-
-// Transient capturing envelope filter
-int32_t cirbuf_y_env[CIRBUF_LEN];
-int32_t tau_over_T_y_env;
-
-// Apply additional HPF for beat detect
-int32_t cirbuf_y_hpf_beat[CIRBUF_LEN];
-int32_t tau_over_T_y_hpf_beat;
-int32_t transient_thresh = 20;
-int32_t transient_cnt = 0;
-
 // OVR Event tracking variable
 uint32_t ovr_cnt = 0;
 
@@ -128,40 +92,6 @@ uint32_t ccr_zero = 19;
 uint32_t ccr_one = 38;
 uint32_t ccr_sequence[NUM_CCRS];
 
-// Number of mic samples before switch states to set LEDs
-uint32_t num_samples_before_LED = 1;
-uint32_t num_samples_taken = 0;
-
-
-/*
- * Initialize constant parameters usd in DSP loop to speed up processing time.
- * Potential gains are on the order of ~175 counts (2.7 us)
- */
-void calc_DSP_constants(void)
-{
-	// Define Sample Frequency
-	T_s = (float)LL_TIM_GetAutoReload(TIM2) / 64E6;
-	f_s = 1 / T_s;
-
-	// Incoming signal HPF
-	float f_n_hpf = 30;
-	tau_over_T_y_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
-
-	// Rectified signal
-
-	// Intensity signal (slow LPF envelope filter)
-	float tau_intensity = 1;
-	tau_over_T_intensity = (tau_intensity / T_s);
-
-	// Transient capturing envelope filter
-	float tau_y_env = 0.25;
-	tau_over_T_y_env = (int32_t)(tau_y_env / T_s);
-
-	// Apply additional HPF for beat detect
-	float f_n_hpf_beat = 30;
-	tau_over_T_y_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
-}
-
 
 
 
@@ -169,36 +99,104 @@ void calc_DSP_constants(void)
 // Define States
 
 // Prototypes
+void config_mic_s(Event evt);
 void mic_s(Event evt);
-void calc_led_s(Event evt);
+void config_led_s(Event evt);
 void led_s(Event evt);
+
+uint32_t mic_arr = 1100;
+
+void config_mic_s(Event evt){
+	switch(evt){
+			case ENTER:
+				// Disable led_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
+				// Disable counter temporarily to configure peripherals
+				LL_TIM_DisableCounter(TIM2);
+
+				// Disable DMA requests triggering on update events
+				LL_TIM_DisableDMAReq_UPDATE(TIM2);
+
+				// Set CCR to 0 so outputting a low (reset) value
+				LL_TIM_OC_SetCompareCH1(TIM2, 0);
+
+				// Disable DMA channel
+				LL_DMA_DisableChannel(DMA1,LL_DMA_CHANNEL_5);
+
+
+				// Configure for mic_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
+				// Set timer ARR such that DSP can complete in one cycle
+				LL_TIM_SetAutoReload(TIM2, mic_arr);
+
+				// Start ADC triggering on TRGO events
+				LL_ADC_REG_StartConversion(ADC1);
+
+				// Enable DMA channel
+				LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
+				// Clear any pending timer status bits
+				CLEAR_REG(TIM2->SR);
+
+				// Transition to next state
+				transition(mic_s);
+				break;
+			default:
+				break;
+		}
+}
+
+
+// Declare Sample Frequency, To be calculated later by getting timer register value
+float T_s;
+float f_s;
+
+// Declare ADC read variables
+uint16_t adc_reads[5];
+uint16_t mic_read;
+
+// Define circular buffers used for DSP.
+#define CIRBUF_LEN 3
+uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
+float cirbuf_mic[CIRBUF_LEN];
+
+// Incoming signal HPF
+float cirbuf_y_hpf[CIRBUF_LEN];
+float tau_over_T_y_hpf;
+
+// Intensity signal (slow LPF envelope filter)
+// Intensity needs to be done in float math due to high tau/T relative to x[n]
+float cirbuf_intensity[CIRBUF_LEN];
+float tau_over_T_intensity;
+int32_t intensity;
+
+// Transient capturing envelope filter
+float cirbuf_y_env[CIRBUF_LEN];
+float tau_over_T_y_env;
+
+// Apply additional HPF for beat detect
+float cirbuf_y_hpf_beat[CIRBUF_LEN];
+float tau_over_T_y_hpf_beat;
+float transient_thresh = 20;
+int32_t transient_cnt = 0;
+
+// Number of mic samples before switch states to set LEDs
+uint32_t num_samples_before_LED = 10;
+uint32_t num_samples_taken = 0;
 
 void mic_s(Event evt){
 	switch(evt){
 		case ENTER:
-			// Set timer ARR such that DSP can complete in one cycle
-			LL_TIM_SetAutoReload(TIM2, 10000);
-
 			// Reset sample tracker
 			num_samples_taken = 0;
-			break;
-		case TIM_UE:
-			break;
-		case OVR:
-			// Clear a flags by writing 1
-			WRITE_REG(ADC1->ISR, adc1_isr_clear_mask);
-			ovr_cnt = 0; // Increment counter (for debugging)
-//			proc_time = TIM2->CNT;
-			break;
-		case DMA_COMPLETE:
-			// Clear Global Flag for ADC channel
-			if (DMA1->ISR & DMA_ISR_GIF1)
-			{
-				SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1);
-			}
 
+			// Enable counter
+			LL_TIM_EnableCounter(TIM2);
+			break;
+		case ADC_OVR:
+			ovr_cnt++; // Increment counter (for debugging)
+			break;
+		case MIC_DMA_COMPLETE:
 			// Processing time for debugging.
-			//	proc_time = TIM2->CNT;
+//				proc_time = TIM2->CNT;
 
 			// Increment sample counter
 			num_samples_taken++;
@@ -209,10 +207,10 @@ void mic_s(Event evt){
 //			uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
 
 			// Save ADC mic read to circular buffer
-			cirbuf_mic[cirbuf_idx] = adc_reads[0];
+			cirbuf_mic[cirbuf_idx] = (float)adc_reads[0];
 
 			// Apply HPF
-			cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
+			cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF_float(
 				cirbuf_y_hpf[cirbuf_idx_minus_1],
 				cirbuf_mic[cirbuf_idx],
 				cirbuf_mic[cirbuf_idx_minus_1],
@@ -228,14 +226,14 @@ void mic_s(Event evt){
 			intensity = (uint32_t)cirbuf_intensity[cirbuf_idx];
 
 			// Transient Envelope
-			cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
+			cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF_float(
 				cirbuf_y_env[cirbuf_idx_minus_1],
 				cirbuf_y_hpf[cirbuf_idx],
 				tau_over_T_y_env
 			);
 
 			// Beat Detect HPF
-			cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
+			cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF_float(
 				cirbuf_y_hpf_beat[cirbuf_idx_minus_1],
 				cirbuf_y_env[cirbuf_idx],
 				cirbuf_y_env[cirbuf_idx_minus_1],
@@ -255,7 +253,8 @@ void mic_s(Event evt){
 //			proc_time = TIM2->CNT;
 
 			if(num_samples_taken >= num_samples_before_LED){
-				transition(calc_led_s);
+//			if(0){
+				transition(config_led_s);
 			}
 			break;
 		default:
@@ -263,15 +262,23 @@ void mic_s(Event evt){
 	}
 }
 
-void calc_led_s(Event evt){
+uint32_t led_arr = 79;
+
+void config_led_s(Event evt){
     switch(evt){
 		case ENTER:
-			// Disable update events temporarily so no events dispatched while doing calculations
-			LL_TIM_DisableUpdateEvent(TIM2);
+			// Disable mic_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
+			// Disable counter temporarily to configure peripherals
+			LL_TIM_DisableCounter(TIM2);
 
-			proc_time = TIM2->CNT;
+			// Stop ADC conversions
+			LL_ADC_REG_StopConversion(ADC1);
 
-			// Generate array for CCR values corresponding to each bit that will be written to LEDs
+			// Disable DMA channel
+			LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
+			// Configure for led_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
+			// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
 			uint32_t ccr_idx = 0;
 			for(int16_t led_idx = 0; led_idx < NUM_LEDS; led_idx++){
 				for(uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
@@ -287,17 +294,21 @@ void calc_led_s(Event evt){
 				}
 			}
 
-			// Re-enable update events
-			LL_TIM_EnableUpdateEvent(TIM2);
-			break;
+			// Enable DMA requests triggering on timer update events
+			LL_TIM_EnableDMAReq_UPDATE(TIM2);
 
-		case TIM_UE:
-			// UE event should not be dispatched unless all calculations are complete
-			// In this case, we are ready to transition to the next state
+			// Enable DMA channel
+			LL_DMA_EnableChannel(DMA1,LL_DMA_CHANNEL_5);
+
+			// Set timer ARR for duration to write one bit to LEDs
+			LL_TIM_SetAutoReload(TIM2, led_arr);
+
+			// Clear any pending timer status bits
+			CLEAR_REG(TIM2->SR);
+
+			// Transition to next state
 			transition(led_s);
 			break;
-		case OVR:
-		case DMA_COMPLETE:
 		default:
 			break;
     }
@@ -306,26 +317,23 @@ void calc_led_s(Event evt){
 void led_s(Event evt){
     switch(evt){
 		case ENTER:
-			// Set timer ARR for duration to write one bit to LEDs
-			LL_TIM_SetAutoReload(TIM2, 79);
-
 			// By this point, sampling the ADCs and running DSP is assumed to have kept
 			// output low long enough for reset pulse. No need to wait for it explicitly.
-			break;
-		case TIM_UE:
-			break;
-		case OVR:
-			break;
-		case DMA_COMPLETE:
-//			proc_time = TIM2->CNT;
-			uint8_t complete = 1;
-			if(complete){
-				// Disable PWM output by setting CCR to 0
-				LL_TIM_OC_SetCompareCH1(TIM2, 0);
 
-				// Transition state
-				transition(mic_s);
-			}
+			// Enable counter. DMA requests will be generated automatically by Timer hardware to reset CCR value
+			LL_TIM_EnableCounter(TIM2);
+			break;
+		case LED_DMA_COMPLETE:
+			// By this point, all LEDs have been written to.
+//			proc_time = TIM2->CNT;
+
+			// Disable PWM output by setting CCR to reset value, 0
+			LL_TIM_OC_SetCompareCH1(TIM2, 0);
+
+			proc_time = TIM2->CNT;
+
+			// Transition state
+			transition(config_mic_s);
 			break;
 		default:
 			break;
@@ -371,15 +379,40 @@ int main(void)
   MX_TIM2_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-	// Calculate all constants used for DSP
-	calc_DSP_constants();
+	// Pre-calculate all constants used for DSP ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  	// Define Sample Frequency
+  	T_s = (float)mic_arr / 64E6;
+  	f_s = 1 / T_s;
 
-	// Configure DMA and enable
+  	// Incoming signal HPF
+  	float f_n_hpf = 30;
+  	tau_over_T_y_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
+
+  	// Intensity signal (slow LPF envelope filter)
+  	float tau_intensity = 1;
+  	tau_over_T_intensity = (tau_intensity / T_s);
+
+  	// Transient capturing envelope filter
+  	float tau_y_env = 0.25;
+  	tau_over_T_y_env = (int32_t)(tau_y_env / T_s);
+
+  	// Apply additional HPF for beat detect
+  	float f_n_hpf_beat = 30;
+  	tau_over_T_y_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
+
+
+  	// Peripheral Configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// Configure DMA for transfer from ADC to memory
 	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
 	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_reads);
 	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)&ADC1->DR);
-	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1);
-	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1); // Enable interrupt to be called when transaction complete
+
+	// Configure DMA for transfer from memory to Timer CCR
+	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_5, NUM_CCRS);
+	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_5, (uint32_t)ccr_sequence);
+	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_5, (uint32_t)&TIM2->CCR1);
+	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_5); // Enable interrupt to be called when transaction complete
 
 	// Calibrate ADC for better accuracy
     LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
@@ -387,21 +420,16 @@ int main(void)
   	  LL_mDelay(100);
     }
 
-    // Enable ADC and start looking for timer TRGO events
+    // Enable ADC (but don't start)
     LL_ADC_Enable(ADC1);
-	//	LL_ADC_EnableIT_EOS(ADC1); // Enable Interrupt for debugging
 	LL_ADC_EnableIT_OVR(ADC1); // Enable Overrun interrupt
-	LL_ADC_REG_StartConversion(ADC1);
 
-	// Enter starting state
-	transition(mic_s);
+	// Configure TIM
+	CLEAR_REG(TIM2->SR);
+	LL_TIM_EnableIT_UPDATE(TIM2); // Enable update event interrupt
 
-	// Start TIM
-	//	LL_TIM_EnableUpdateEvent(TIM2); // Unnecessary - default is enabled
-	LL_TIM_EnableIT_UPDATE(TIM2); // Enable update interrupt
-	LL_TIM_EnableCounter(TIM2);
-
-
+	// Enter starting state ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	transition(config_mic_s);
 
   /* USER CODE END 2 */
 
@@ -615,6 +643,23 @@ static void MX_TIM2_Init(void)
   /* Peripheral clock enable */
   LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM2);
 
+  /* TIM2 DMA Init */
+
+  /* TIM2_CH1 Init */
+  LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_5, LL_DMA_DIRECTION_MEMORY_TO_PERIPH);
+
+  LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_5, LL_DMA_PRIORITY_LOW);
+
+  LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_5, LL_DMA_MODE_NORMAL);
+
+  LL_DMA_SetPeriphIncMode(DMA1, LL_DMA_CHANNEL_5, LL_DMA_PERIPH_NOINCREMENT);
+
+  LL_DMA_SetMemoryIncMode(DMA1, LL_DMA_CHANNEL_5, LL_DMA_MEMORY_INCREMENT);
+
+  LL_DMA_SetPeriphSize(DMA1, LL_DMA_CHANNEL_5, LL_DMA_PDATAALIGN_WORD);
+
+  LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_5, LL_DMA_MDATAALIGN_WORD);
+
   /* TIM2 interrupt Init */
   NVIC_SetPriority(TIM2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
   NVIC_EnableIRQ(TIM2_IRQn);
@@ -682,6 +727,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   NVIC_SetPriority(DMA1_Channel1_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
   NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  NVIC_SetPriority(DMA1_Channel5_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
+  NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 

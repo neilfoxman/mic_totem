@@ -11,8 +11,9 @@
 typedef enum{
 	ENTER,
     TIM_UE,
-    OVR,
-	DMA_COMPLETE,
+    ADC_OVR,
+	MIC_DMA_COMPLETE,
+	LED_DMA_COMPLETE,
 	NUM_EVENTS
 } Event;
 
