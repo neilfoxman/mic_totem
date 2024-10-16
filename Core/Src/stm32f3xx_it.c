@@ -223,25 +223,22 @@ void DMA1_Channel1_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles DMA1 channel5 global interrupt.
+  * @brief This function handles DMA1 channel2 global interrupt.
   */
-void DMA1_Channel5_IRQHandler(void)
+void DMA1_Channel2_IRQHandler(void)
 {
-  /* USER CODE BEGIN DMA1_Channel5_IRQn 0 */
-	/*
-	 * This interrupt is called when all LEDs have been written to.
-	 */
+  /* USER CODE BEGIN DMA1_Channel2_IRQn 0 */
 	// Clear Global Flag for ADC channel
-	SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF5);
+	SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF2);
 
-	// Issue LED_DMA_COMPLETE event to current state
+	// Issue MIC_DMA_COMPLETE event to current state
 	current_state(LED_DMA_COMPLETE);
 
-  /* USER CODE END DMA1_Channel5_IRQn 0 */
+  /* USER CODE END DMA1_Channel2_IRQn 0 */
 
-  /* USER CODE BEGIN DMA1_Channel5_IRQn 1 */
+  /* USER CODE BEGIN DMA1_Channel2_IRQn 1 */
 
-  /* USER CODE END DMA1_Channel5_IRQn 1 */
+  /* USER CODE END DMA1_Channel2_IRQn 1 */
 }
 
 /**

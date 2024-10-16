@@ -119,10 +119,6 @@ void config_mic_s(Event evt){
 				// Set CCR to 0 so outputting a low (reset) value
 				LL_TIM_OC_SetCompareCH1(TIM2, 0);
 
-				// Disable DMA channel
-				LL_DMA_DisableChannel(DMA1,LL_DMA_CHANNEL_5);
-
-
 				// Configure for mic_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
 				// Set timer ARR such that DSP can complete in one cycle
 				LL_TIM_SetAutoReload(TIM2, mic_arr);
@@ -130,15 +126,15 @@ void config_mic_s(Event evt){
 				// Start ADC triggering on TRGO events
 				LL_ADC_REG_StartConversion(ADC1);
 
-				// Enable DMA channel
-				LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
-
 				// Clear any pending timer status bits
 				CLEAR_REG(TIM2->SR);
 
+				// Enable counter. Transition to next state occurs on the next update event
+				LL_TIM_EnableCounter(TIM2);
+				break;
+			case TIM_UE:
 				// Transition to next state
 				transition(mic_s);
-				break;
 			default:
 				break;
 		}
@@ -187,17 +183,11 @@ void mic_s(Event evt){
 		case ENTER:
 			// Reset sample tracker
 			num_samples_taken = 0;
-
-			// Enable counter
-			LL_TIM_EnableCounter(TIM2);
 			break;
 		case ADC_OVR:
 			ovr_cnt++; // Increment counter (for debugging)
 			break;
 		case MIC_DMA_COMPLETE:
-			// Processing time for debugging.
-//				proc_time = TIM2->CNT;
-
 			// Increment sample counter
 			num_samples_taken++;
 
@@ -253,7 +243,6 @@ void mic_s(Event evt){
 //			proc_time = TIM2->CNT;
 
 			if(num_samples_taken >= num_samples_before_LED){
-//			if(0){
 				transition(config_led_s);
 			}
 			break;
@@ -262,20 +251,20 @@ void mic_s(Event evt){
 	}
 }
 
-uint32_t led_arr = 79;
+//uint32_t led_arr = 79;
+uint32_t led_arr = 1000;
+uint32_t led_config_cnt = 0;
 
 void config_led_s(Event evt){
     switch(evt){
 		case ENTER:
+			led_config_cnt++;
 			// Disable mic_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
 			// Disable counter temporarily to configure peripherals
 			LL_TIM_DisableCounter(TIM2);
 
-			// Stop ADC conversions
+			// Stop ADC conversions (and therefore no DMA requests will be generated)
 			LL_ADC_REG_StopConversion(ADC1);
-
-			// Disable DMA channel
-			LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
 
 			// Configure for led_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
 			// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
@@ -297,18 +286,19 @@ void config_led_s(Event evt){
 			// Enable DMA requests triggering on timer update events
 			LL_TIM_EnableDMAReq_UPDATE(TIM2);
 
-			// Enable DMA channel
-			LL_DMA_EnableChannel(DMA1,LL_DMA_CHANNEL_5);
-
 			// Set timer ARR for duration to write one bit to LEDs
 			LL_TIM_SetAutoReload(TIM2, led_arr);
 
 			// Clear any pending timer status bits
 			CLEAR_REG(TIM2->SR);
 
+			// Enable counter. State will transition on the next update event
+			// DMA requests will be generated automatically by Timer hardware to reset CCR value
+			LL_TIM_EnableCounter(TIM2);
+			break;
+		case TIM_UE:
 			// Transition to next state
 			transition(led_s);
-			break;
 		default:
 			break;
     }
@@ -319,17 +309,9 @@ void led_s(Event evt){
 		case ENTER:
 			// By this point, sampling the ADCs and running DSP is assumed to have kept
 			// output low long enough for reset pulse. No need to wait for it explicitly.
-
-			// Enable counter. DMA requests will be generated automatically by Timer hardware to reset CCR value
-			LL_TIM_EnableCounter(TIM2);
 			break;
 		case LED_DMA_COMPLETE:
 			// By this point, all LEDs have been written to.
-//			proc_time = TIM2->CNT;
-
-			// Disable PWM output by setting CCR to reset value, 0
-			LL_TIM_OC_SetCompareCH1(TIM2, 0);
-
 			proc_time = TIM2->CNT;
 
 			// Transition state
@@ -403,16 +385,18 @@ int main(void)
 
   	// Peripheral Configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Configure DMA for transfer from ADC to memory
-	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
-	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_reads);
-	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)&ADC1->DR);
+  	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)&ADC1->DR);
+  	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_reads);
+  	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
 	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1); // Enable interrupt to be called when transaction complete
+	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
 
 	// Configure DMA for transfer from memory to Timer CCR
-	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_5, NUM_CCRS);
-	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_5, (uint32_t)ccr_sequence);
-	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_5, (uint32_t)&TIM2->CCR1);
-	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_5); // Enable interrupt to be called when transaction complete
+	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_2, (uint32_t)&TIM2->CCR1);
+	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_2, (uint32_t)ccr_sequence);
+	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_2, NUM_CCRS);
+	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_2); // Enable interrupt to be called when transaction complete
+	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_2);
 
 	// Calibrate ADC for better accuracy
     LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
@@ -427,6 +411,9 @@ int main(void)
 	// Configure TIM
 	CLEAR_REG(TIM2->SR);
 	LL_TIM_EnableIT_UPDATE(TIM2); // Enable update event interrupt
+	LL_TIM_CC_EnableChannel(TIM2, LL_TIM_CHANNEL_CH1); // Enable Capture compare channel
+	LL_TIM_CC_SetDMAReqTrigger(TIM2, LL_TIM_CCDMAREQUEST_UPDATE); // Set DMA Request source
+
 
 	// Enter starting state ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	transition(config_mic_s);
@@ -645,20 +632,20 @@ static void MX_TIM2_Init(void)
 
   /* TIM2 DMA Init */
 
-  /* TIM2_CH1 Init */
-  LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_5, LL_DMA_DIRECTION_MEMORY_TO_PERIPH);
+  /* TIM2_UP Init */
+  LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_2, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
 
-  LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_5, LL_DMA_PRIORITY_LOW);
+  LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PRIORITY_MEDIUM);
 
-  LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_5, LL_DMA_MODE_NORMAL);
+  LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MODE_CIRCULAR);
 
-  LL_DMA_SetPeriphIncMode(DMA1, LL_DMA_CHANNEL_5, LL_DMA_PERIPH_NOINCREMENT);
+  LL_DMA_SetPeriphIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PERIPH_NOINCREMENT);
 
-  LL_DMA_SetMemoryIncMode(DMA1, LL_DMA_CHANNEL_5, LL_DMA_MEMORY_INCREMENT);
+  LL_DMA_SetMemoryIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MEMORY_INCREMENT);
 
-  LL_DMA_SetPeriphSize(DMA1, LL_DMA_CHANNEL_5, LL_DMA_PDATAALIGN_WORD);
+  LL_DMA_SetPeriphSize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PDATAALIGN_WORD);
 
-  LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_5, LL_DMA_MDATAALIGN_WORD);
+  LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MDATAALIGN_WORD);
 
   /* TIM2 interrupt Init */
   NVIC_SetPriority(TIM2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
@@ -727,9 +714,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   NVIC_SetPriority(DMA1_Channel1_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
   NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-  /* DMA1_Channel5_IRQn interrupt configuration */
-  NVIC_SetPriority(DMA1_Channel5_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
-  NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  NVIC_SetPriority(DMA1_Channel2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),0, 0));
+  NVIC_EnableIRQ(DMA1_Channel2_IRQn);
 
 }
 
