@@ -110,6 +110,7 @@ void config_mic_s(Event evt){
 	switch(evt){
 			case ENTER:
 				// Disable led_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
+				proc_time = TIM2->CNT;
 				// Disable counter temporarily to configure peripherals
 				LL_TIM_DisableCounter(TIM2);
 
@@ -312,8 +313,6 @@ void led_s(Event evt){
 			break;
 		case LED_DMA_COMPLETE:
 			// By this point, all LEDs have been written to.
-			proc_time = TIM2->CNT;
-
 			// Transition state
 			transition(config_mic_s);
 			break;
@@ -633,7 +632,7 @@ static void MX_TIM2_Init(void)
   /* TIM2 DMA Init */
 
   /* TIM2_UP Init */
-  LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_2, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
+  LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_2, LL_DMA_DIRECTION_MEMORY_TO_PERIPH);
 
   LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PRIORITY_MEDIUM);
 
