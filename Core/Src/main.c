@@ -110,7 +110,7 @@ void config_mic_s(Event evt){
 	switch(evt){
 			case ENTER:
 				// Disable led_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
-				proc_time = TIM2->CNT;
+//				proc_time = TIM2->CNT;
 				// Disable counter temporarily to configure peripherals
 				LL_TIM_DisableCounter(TIM2);
 
@@ -173,10 +173,10 @@ float tau_over_T_y_env;
 float cirbuf_y_hpf_beat[CIRBUF_LEN];
 float tau_over_T_y_hpf_beat;
 float transient_thresh = 20;
-int32_t transient_cnt = 0;
+int32_t transient_present = 0;
 
 // Number of mic samples before switch states to set LEDs
-uint32_t num_samples_before_LED = 10;
+uint32_t num_samples_before_LED = 1000;
 uint32_t num_samples_taken = 0;
 
 void mic_s(Event evt){
@@ -184,6 +184,9 @@ void mic_s(Event evt){
 		case ENTER:
 			// Reset sample tracker
 			num_samples_taken = 0;
+
+			// Reset Transient counter
+			transient_present = 0;
 			break;
 		case ADC_OVR:
 			ovr_cnt++; // Increment counter (for debugging)
@@ -234,7 +237,7 @@ void mic_s(Event evt){
 			// Beat detect threshold
 			if (cirbuf_y_hpf_beat[cirbuf_idx] > transient_thresh)
 			{
-				transient_cnt++;
+				transient_present++;
 			}
 
 			// FINAL: Increment circular buffer index to store next read from ADC
@@ -252,8 +255,8 @@ void mic_s(Event evt){
 	}
 }
 
-//uint32_t led_arr = 79;
-uint32_t led_arr = 1000;
+uint32_t led_arr = 79;
+//uint32_t led_arr = 1000;
 uint32_t led_config_cnt = 0;
 
 void config_led_s(Event evt){
@@ -268,10 +271,29 @@ void config_led_s(Event evt){
 			LL_ADC_REG_StopConversion(ADC1);
 
 			// Configure for led_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
-			// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
+			// TODO: Respond if transient occurred
+			// TODO: Work out calculation for transients and intensity
+
+			// Cycle through each LED and each color channel
 			uint32_t ccr_idx = 0;
 			for(int16_t led_idx = 0; led_idx < NUM_LEDS; led_idx++){
 				for(uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
+					// Calculate channel color for this LED
+					switch(chan_idx){
+						case 0:
+							led_vals[led_idx][chan_idx] = 0xAA;
+							break;
+						case 1:
+							led_vals[led_idx][chan_idx] = 0xAA;
+							break;
+						case 2:
+							led_vals[led_idx][chan_idx] = 0xAA;
+							break;
+						default:
+							break;
+					}
+
+					// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
 					for(int8_t bit_idx = 7; bit_idx >=0; bit_idx--){
 						if((led_vals[led_idx][chan_idx] & (0b1 << bit_idx)) > 0){
 							ccr_sequence[ccr_idx] = ccr_one;
