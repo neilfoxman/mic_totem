@@ -82,7 +82,7 @@ uint32_t proc_time;
 uint32_t ovr_cnt = 0;
 
 // LED output variables
-#define NUM_LEDS 20
+#define NUM_LEDS 50
 #define NUM_LED_CHANNELS 3
 uint8_t led_vals[NUM_LEDS][NUM_LED_CHANNELS];
 
@@ -117,6 +117,12 @@ void config_mic_s(Event evt){
 				// Disable DMA requests triggering on update events
 				LL_TIM_DisableDMAReq_UPDATE(TIM2);
 
+				// Disable DMA
+				LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_2);
+
+				// Force reset counter using update event
+				LL_TIM_GenerateEvent_UPDATE(TIM2);
+
 				// Set CCR to 0 so outputting a low (reset) value
 				LL_TIM_OC_SetCompareCH1(TIM2, 0);
 
@@ -124,11 +130,18 @@ void config_mic_s(Event evt){
 				// Set timer ARR such that DSP can complete in one cycle
 				LL_TIM_SetAutoReload(TIM2, mic_arr);
 
+				// Clear any pending status registers
+				CLEAR_REG(TIM2->SR);
+				SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1 | DMA_IFCR_CGIF2);
+
+				// Reset DMA counter
+				LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
+
+				// Enable DMA
+				LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
 				// Start ADC triggering on TRGO events
 				LL_ADC_REG_StartConversion(ADC1);
-
-				// Clear any pending timer status bits
-				CLEAR_REG(TIM2->SR);
 
 				// Enable counter. Transition to next state occurs on the next update event
 				LL_TIM_EnableCounter(TIM2);
@@ -257,18 +270,19 @@ void mic_s(Event evt){
 
 uint32_t led_arr = 79;
 //uint32_t led_arr = 1000;
-uint32_t led_config_cnt = 0;
 
 void config_led_s(Event evt){
     switch(evt){
 		case ENTER:
-			led_config_cnt++;
 			// Disable mic_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
 			// Disable counter temporarily to configure peripherals
 			LL_TIM_DisableCounter(TIM2);
 
 			// Stop ADC conversions (and therefore no DMA requests will be generated)
 			LL_ADC_REG_StopConversion(ADC1);
+
+			// Force reset counter using update event
+			LL_TIM_GenerateEvent_UPDATE(TIM2);
 
 			// Configure for led_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
 			// TODO: Respond if transient occurred
@@ -306,17 +320,23 @@ void config_led_s(Event evt){
 				}
 			}
 
-			// Enable DMA requests triggering on timer update events
-			LL_TIM_EnableDMAReq_UPDATE(TIM2);
-
 			// Set timer ARR for duration to write one bit to LEDs
 			LL_TIM_SetAutoReload(TIM2, led_arr);
 
-			// Clear any pending timer status bits
+			// Clear any pending status registers
 			CLEAR_REG(TIM2->SR);
+			SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1 | DMA_IFCR_CGIF2);
+
+			// Reset DMA counter
+			LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_2, NUM_CCRS);
+
+			// Enable DMA
+			LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_2);
+
+			// Enable DMA requests triggering on timer update events
+			LL_TIM_EnableDMAReq_UPDATE(TIM2);
 
 			// Enable counter. State will transition on the next update event
-			// DMA requests will be generated automatically by Timer hardware to reset CCR value
 			LL_TIM_EnableCounter(TIM2);
 			break;
 		case TIM_UE:
@@ -408,16 +428,13 @@ int main(void)
 	// Configure DMA for transfer from ADC to memory
   	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)&ADC1->DR);
   	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_reads);
-  	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
 	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1); // Enable interrupt to be called when transaction complete
-	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
 
 	// Configure DMA for transfer from memory to Timer CCR
 	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_2, (uint32_t)&TIM2->CCR1);
 	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_2, (uint32_t)ccr_sequence);
-	LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_2, NUM_CCRS);
 	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_2); // Enable interrupt to be called when transaction complete
-	LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_2);
 
 	// Calibrate ADC for better accuracy
     LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
@@ -658,7 +675,7 @@ static void MX_TIM2_Init(void)
 
   LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PRIORITY_MEDIUM);
 
-  LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MODE_CIRCULAR);
+  LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MODE_NORMAL);
 
   LL_DMA_SetPeriphIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PERIPH_NOINCREMENT);
 
