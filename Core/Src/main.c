@@ -81,21 +81,6 @@ uint32_t proc_time;
 // OVR Event tracking variable
 uint32_t ovr_cnt = 0;
 
-// LED output variables
-#define NUM_LEDS 50
-#define NUM_LED_CHANNELS 3
-uint8_t led_vals[NUM_LEDS][NUM_LED_CHANNELS];
-
-// Variables used when converting from bits to Timer CCR durations
-#define NUM_CCRS (NUM_LEDS * NUM_LED_CHANNELS * 8)
-uint32_t ccr_zero = 19;
-uint32_t ccr_one = 38;
-uint32_t ccr_sequence[NUM_CCRS];
-
-
-
-
-
 // Define States
 
 // Prototypes
@@ -135,10 +120,14 @@ void config_mic_s(Event evt){
 				SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1 | DMA_IFCR_CGIF2);
 
 				// Reset DMA counter
-				LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 5);
+				LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 3);
+				while(LL_DMA_GetDataLength(DMA1, LL_DMA_CHANNEL_1) != 3){}
 
 				// Enable DMA
 				LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
+				// Enable ADC
+				LL_ADC_Enable(ADC1);
 
 				// Start ADC triggering on TRGO events
 				LL_ADC_REG_StartConversion(ADC1);
@@ -160,8 +149,10 @@ float T_s;
 float f_s;
 
 // Declare ADC read variables
-uint16_t adc_reads[5];
-uint16_t mic_read;
+uint16_t adc_reads[3];
+#define ADC_RANK_MIC 0
+#define ADC_RANK_TRANSIENT_THRESH 1
+#define ADC_RANK_BRIGHTNESS 2
 
 // Define circular buffers used for DSP.
 #define CIRBUF_LEN 3
@@ -176,7 +167,7 @@ float tau_over_T_y_hpf;
 // Intensity needs to be done in float math due to high tau/T relative to x[n]
 float cirbuf_intensity[CIRBUF_LEN];
 float tau_over_T_intensity;
-int32_t intensity;
+float intensity;
 
 // Transient capturing envelope filter
 float cirbuf_y_env[CIRBUF_LEN];
@@ -185,7 +176,6 @@ float tau_over_T_y_env;
 // Apply additional HPF for beat detect
 float cirbuf_y_hpf_beat[CIRBUF_LEN];
 float tau_over_T_y_hpf_beat;
-float transient_thresh = 20;
 int32_t transient_present = 0;
 
 // Number of mic samples before switch states to set LEDs
@@ -197,9 +187,6 @@ void mic_s(Event evt){
 		case ENTER:
 			// Reset sample tracker
 			num_samples_taken = 0;
-
-			// Reset Transient counter
-			transient_present = 0;
 			break;
 		case ADC_OVR:
 			ovr_cnt++; // Increment counter (for debugging)
@@ -214,7 +201,7 @@ void mic_s(Event evt){
 //			uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
 
 			// Save ADC mic read to circular buffer
-			cirbuf_mic[cirbuf_idx] = (float)adc_reads[0];
+			cirbuf_mic[cirbuf_idx] = (float)adc_reads[ADC_RANK_MIC];
 
 			// Apply HPF
 			cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF_float(
@@ -230,7 +217,7 @@ void mic_s(Event evt){
 				cirbuf_y_hpf[cirbuf_idx],
 				tau_over_T_intensity
 			);
-			intensity = (uint32_t)cirbuf_intensity[cirbuf_idx];
+			intensity = cirbuf_intensity[cirbuf_idx];
 
 			// Transient Envelope
 			cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF_float(
@@ -247,6 +234,11 @@ void mic_s(Event evt){
 				tau_over_T_y_hpf_beat
 			);
 
+			// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
+			float transient_thresh_adc = (float)adc_reads[ADC_RANK_TRANSIENT_THRESH];
+			const float transient_thresh_scale = 3.0 / 65535.0; // Reduce 3.0 to make more sensitive
+			float transient_thresh = (1.0f + transient_thresh_adc * transient_thresh_scale ) * intensity;
+
 			// Beat detect threshold
 			if (cirbuf_y_hpf_beat[cirbuf_idx] > transient_thresh)
 			{
@@ -257,7 +249,7 @@ void mic_s(Event evt){
 			cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
 
 			// Capture time at end of processing for setting good sample frequency
-//			proc_time = TIM2->CNT;
+			proc_time = TIM2->CNT;
 
 			if(num_samples_taken >= num_samples_before_LED){
 				transition(config_led_s);
@@ -268,8 +260,30 @@ void mic_s(Event evt){
 	}
 }
 
+// LED output variables
+#define NUM_LEDS 30
+#define NUM_LED_CHANNELS 3
+uint8_t led_vals[NUM_LEDS][NUM_LED_CHANNELS];
+
+// Variables used when converting from bits to Timer CCR durations
+#define NUM_CCRS (NUM_LEDS * NUM_LED_CHANNELS * 8)
+uint32_t ccr_zero = 19;
+uint32_t ccr_one = 38;
+uint32_t ccr_sequence[NUM_CCRS];
+
 uint32_t led_arr = 79;
 //uint32_t led_arr = 1000;
+
+uint32_t refresh_cntr = 0;
+
+uint8_t transient_locations[NUM_LEDS];
+float led_transient_component[NUM_LEDS];
+
+float led_intensity_component[NUM_LED_CHANNELS];
+
+float i_and_t;
+float i_and_t_scaled;
+float brightness_gain;
 
 void config_led_s(Event evt){
     switch(evt){
@@ -280,32 +294,81 @@ void config_led_s(Event evt){
 
 			// Stop ADC conversions (and therefore no DMA requests will be generated)
 			LL_ADC_REG_StopConversion(ADC1);
+			while (READ_BIT(ADC1->CR, ADC_CR_ADSTART) > 0){}
+
+			// Disable ADC
+			LL_ADC_Disable(ADC1);
+			while (READ_BIT(ADC1->CR, ADC_CR_ADEN) > 0){}
 
 			// Force reset counter using update event
 			LL_TIM_GenerateEvent_UPDATE(TIM2);
 
 			// Configure for led_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
-			// TODO: Respond if transient occurred
-			// TODO: Work out calculation for transients and intensity
+			// Update refresh counter
+			refresh_cntr += 1;
+
+			// Update transient component of LEDs based on previous value and decay rate
+
+			for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
+				const float decay_factor = 0.9;
+				led_transient_component[idx] = decay_factor * led_transient_component[idx];
+			}
+
+			// Define constant that compares how many refresh cycles need to occur before
+			// transient pulse "moves" to the next LED.
+			const uint8_t x_dot_over_refresh_rate = 3;
+
+			// If rollover occurred based on x_dot_over_refresh_rate
+			if (refresh_cntr % x_dot_over_refresh_rate == 0){
+				// Shift transient impulses by 1
+				for (uint8_t idx = NUM_LEDS - 1; idx > 0; idx--){
+					transient_locations[idx] = transient_locations[idx-1];
+				}
+
+				// If a transient has occurred since the last time we checked
+				if (transient_present > 0){
+					// Start transient on first LED
+					transient_locations[0] = 1;
+
+					// Reset Transient counter
+					transient_present = 0;
+				}
+
+				// In any location where a transient has just moved, set led_transient_component to 1
+				for (uint8_t idx; idx < NUM_LEDS; idx++){
+					if (transient_locations[idx] > 0){
+						led_transient_component[idx] = 1.0f;
+					}
+				}
+			}
+
+			// Now calculate intensity component of LEDs
+			// Each color channel intensity component oscillates at different frequencies and
+			// is dependent on measured intensity. Periods are measured in number of LED refresh cycles.
+			const float periods[NUM_LED_CHANNELS] = {500, 600, 700};
+			for (uint8_t idx = 0; idx < NUM_LED_CHANNELS; idx++){
+				// Calculate led intensity component based on recorded intensity and hypothetical max intensity
+				// (Some SWAG to get output between 0 and 1)
+				float intensity_factor = intensity / 65535.0;
+				led_intensity_component[idx] = intensity_factor * (sin((float)refresh_cntr / periods[idx]) + 1)/2;
+			}
 
 			// Cycle through each LED and each color channel
 			uint32_t ccr_idx = 0;
 			for(int16_t led_idx = 0; led_idx < NUM_LEDS; led_idx++){
 				for(uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
-					// Calculate channel color for this LED
-					switch(chan_idx){
-						case 0:
-							led_vals[led_idx][chan_idx] = 0xAA;
-							break;
-						case 1:
-							led_vals[led_idx][chan_idx] = 0xAA;
-							break;
-						case 2:
-							led_vals[led_idx][chan_idx] = 0xAA;
-							break;
-						default:
-							break;
-					}
+					// Calculate channel color for this LED by scaling and combining intensity and transient component
+					const float transient_coef = 0.3;
+					i_and_t = led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx];
+
+					// Scale intensity and transient components so roughly between 0 and 255
+					i_and_t_scaled = i_and_t * (255.0/(1.0 + transient_coef));
+
+					// Calculate global brightness gain based on ADC read channel (potentiometer)
+					brightness_gain = ((float)adc_reads[ADC_RANK_BRIGHTNESS] * 1.0) / 65536.0;
+
+					// Put all values together to determine intensity for this LED channel
+					led_vals[led_idx][chan_idx] = (uint8_t)(brightness_gain * i_and_t_scaled);
 
 					// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
 					for(int8_t bit_idx = 7; bit_idx >=0; bit_idx--){
@@ -536,20 +599,12 @@ static void MX_ADC1_Init(void)
   /* Peripheral clock enable */
   LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_ADC1);
 
-  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOC);
   LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOA);
   /**ADC1 GPIO Configuration
-  PC0   ------> ADC1_IN6
-  PC1   ------> ADC1_IN7
   PA0   ------> ADC1_IN1
   PA1   ------> ADC1_IN2
   PA4   ------> ADC1_IN5
   */
-  GPIO_InitStruct.Pin = LL_GPIO_PIN_0|LL_GPIO_PIN_1;
-  GPIO_InitStruct.Mode = LL_GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
-  LL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
   GPIO_InitStruct.Pin = LL_GPIO_PIN_0|LL_GPIO_PIN_1|LL_GPIO_PIN_4;
   GPIO_InitStruct.Mode = LL_GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
@@ -588,7 +643,7 @@ static void MX_ADC1_Init(void)
   ADC_InitStruct.LowPowerMode = LL_ADC_LP_MODE_NONE;
   LL_ADC_Init(ADC1, &ADC_InitStruct);
   ADC_REG_InitStruct.TriggerSource = LL_ADC_REG_TRIG_EXT_TIM2_TRGO;
-  ADC_REG_InitStruct.SequencerLength = LL_ADC_REG_SEQ_SCAN_ENABLE_5RANKS;
+  ADC_REG_InitStruct.SequencerLength = LL_ADC_REG_SEQ_SCAN_ENABLE_3RANKS;
   ADC_REG_InitStruct.SequencerDiscont = LL_ADC_REG_SEQ_DISCONT_DISABLE;
   ADC_REG_InitStruct.ContinuousMode = LL_ADC_REG_CONV_SINGLE;
   ADC_REG_InitStruct.DMATransfer = LL_ADC_REG_DMA_TRANSFER_UNLIMITED;
@@ -630,18 +685,6 @@ static void MX_ADC1_Init(void)
   LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_3, LL_ADC_CHANNEL_5);
   LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_5, LL_ADC_SAMPLINGTIME_1CYCLE_5);
   LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_5, LL_ADC_SINGLE_ENDED);
-
-  /** Configure Regular Channel
-  */
-  LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_4, LL_ADC_CHANNEL_6);
-  LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_6, LL_ADC_SAMPLINGTIME_1CYCLE_5);
-  LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_6, LL_ADC_SINGLE_ENDED);
-
-  /** Configure Regular Channel
-  */
-  LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_5, LL_ADC_CHANNEL_7);
-  LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_7, LL_ADC_SAMPLINGTIME_1CYCLE_5);
-  LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_7, LL_ADC_SINGLE_ENDED);
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
