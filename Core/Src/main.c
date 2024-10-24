@@ -103,7 +103,9 @@ void config_mic_s(Event evt){
 				LL_TIM_DisableDMAReq_UPDATE(TIM2);
 
 				// Disable DMA
+				LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
 				LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_2);
+				SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1 | DMA_IFCR_CGIF2);
 
 				// Force reset counter using update event
 				LL_TIM_GenerateEvent_UPDATE(TIM2);
@@ -212,9 +214,9 @@ void mic_s(Event evt){
 			);
 
 			// Determine Intensity
-			cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF_float(
+			cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceLPF_float(
 				cirbuf_intensity[cirbuf_idx_minus_1],
-				cirbuf_y_hpf[cirbuf_idx],
+				fabs(cirbuf_y_hpf[cirbuf_idx]),
 				tau_over_T_intensity
 			);
 			intensity = cirbuf_intensity[cirbuf_idx];
@@ -276,9 +278,11 @@ uint32_t led_arr = 79;
 
 uint32_t refresh_cntr = 0;
 
+// Declare LED variables external from state machine for easier tracking/debugging
 uint8_t transient_locations[NUM_LEDS];
 float led_transient_component[NUM_LEDS];
 
+float intensity_factor;
 float led_intensity_component[NUM_LED_CHANNELS];
 
 float i_and_t;
@@ -299,6 +303,11 @@ void config_led_s(Event evt){
 			// Disable ADC
 			LL_ADC_Disable(ADC1);
 			while (READ_BIT(ADC1->CR, ADC_CR_ADEN) > 0){}
+
+			// Disable DMA and clear flags
+			LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
+			LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_2);
+			SET_BIT(DMA1->IFCR, DMA_IFCR_CGIF1 | DMA_IFCR_CGIF2);
 
 			// Force reset counter using update event
 			LL_TIM_GenerateEvent_UPDATE(TIM2);
@@ -347,9 +356,10 @@ void config_led_s(Event evt){
 			// is dependent on measured intensity. Periods are measured in number of LED refresh cycles.
 			const float periods[NUM_LED_CHANNELS] = {500, 600, 700};
 			for (uint8_t idx = 0; idx < NUM_LED_CHANNELS; idx++){
-				// Calculate led intensity component based on recorded intensity and hypothetical max intensity
-				// (Some SWAG to get output between 0 and 1)
-				float intensity_factor = intensity / 65535.0;
+				// Calculate led intensity component based on recorded intensity and max intensity
+				// Max intensity estimated by experimentation (blowing on mic).
+				// Goal is for intensity_factor to be between 0 and 1. Ceiling of 1 by design.
+				intensity_factor = fminf(intensity / 900.0, 1.0);
 				led_intensity_component[idx] = intensity_factor * (sin((float)refresh_cntr / periods[idx]) + 1)/2;
 			}
 
@@ -357,18 +367,21 @@ void config_led_s(Event evt){
 			uint32_t ccr_idx = 0;
 			for(int16_t led_idx = 0; led_idx < NUM_LEDS; led_idx++){
 				for(uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
-					// Calculate channel color for this LED by scaling and combining intensity and transient component
-					const float transient_coef = 0.3;
-					i_and_t = led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx];
-
-					// Scale intensity and transient components so roughly between 0 and 255
+//					// Calculate channel color for this LED by scaling and combining intensity and transient component
+//					const float transient_coef = 0.3;
+					const float transient_coef = 0.0;
+//					i_and_t = led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx];
+					i_and_t = led_intensity_component[chan_idx];
+//
+//					// Scale intensity and transient components so roughly between 0 and 255
 					i_and_t_scaled = i_and_t * (255.0/(1.0 + transient_coef));
-
-					// Calculate global brightness gain based on ADC read channel (potentiometer)
-					brightness_gain = ((float)adc_reads[ADC_RANK_BRIGHTNESS] * 1.0) / 65536.0;
-
-					// Put all values together to determine intensity for this LED channel
-					led_vals[led_idx][chan_idx] = (uint8_t)(brightness_gain * i_and_t_scaled);
+//
+//					// Calculate global brightness gain based on ADC read channel (potentiometer)
+					brightness_gain = ((float)adc_reads[ADC_RANK_BRIGHTNESS] * 10.0) / 4095.0;
+//
+//					// Put all values together to determine intensity for this LED channel
+					led_vals[led_idx][chan_idx] = (uint8_t)(fminf(brightness_gain * i_and_t_scaled, 255.0));
+//					led_vals[led_idx][chan_idx] = (uint8_t)(led_intensity_component[chan_idx] * 255.0);
 
 					// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
 					for(int8_t bit_idx = 7; bit_idx >=0; bit_idx--){
@@ -475,7 +488,7 @@ int main(void)
   	tau_over_T_y_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
 
   	// Intensity signal (slow LPF envelope filter)
-  	float tau_intensity = 1;
+  	float tau_intensity = 1.5;
   	tau_over_T_intensity = (tau_intensity / T_s);
 
   	// Transient capturing envelope filter
@@ -489,6 +502,7 @@ int main(void)
 
   	// Peripheral Configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Configure DMA for transfer from ADC to memory
+  	LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
   	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)&ADC1->DR);
   	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)adc_reads);
 	LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1); // Enable interrupt to be called when transaction complete
