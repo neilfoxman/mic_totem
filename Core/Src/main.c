@@ -89,7 +89,7 @@ void mic_s(Event evt);
 void config_led_s(Event evt);
 void led_s(Event evt);
 
-uint32_t mic_arr = 1100;
+uint32_t mic_arr = 2000;
 
 void config_mic_s(Event evt){
 	switch(evt){
@@ -171,13 +171,15 @@ float cirbuf_intensity[CIRBUF_LEN];
 float tau_over_T_intensity;
 float intensity;
 
-// Transient capturing envelope filter
-float cirbuf_y_env[CIRBUF_LEN];
-float tau_over_T_y_env;
-
-// Apply additional HPF for beat detect
+// HPF for beat detect
 float cirbuf_y_hpf_beat[CIRBUF_LEN];
 float tau_over_T_y_hpf_beat;
+
+// Rectified beat detect signal
+float y_beat_abs;
+
+// Transient detector threshold and counter
+float transient_thresh;
 int32_t transient_present = 0;
 
 // Number of mic samples before switch states to set LEDs
@@ -221,28 +223,24 @@ void mic_s(Event evt){
 			);
 			intensity = cirbuf_intensity[cirbuf_idx];
 
-			// Transient Envelope
-			cirbuf_y_env[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF_float(
-				cirbuf_y_env[cirbuf_idx_minus_1],
-				cirbuf_y_hpf[cirbuf_idx],
-				tau_over_T_y_env
-			);
-
 			// Beat Detect HPF
 			cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF_float(
 				cirbuf_y_hpf_beat[cirbuf_idx_minus_1],
-				cirbuf_y_env[cirbuf_idx],
-				cirbuf_y_env[cirbuf_idx_minus_1],
+				cirbuf_mic[cirbuf_idx],
+				cirbuf_mic[cirbuf_idx_minus_1],
 				tau_over_T_y_hpf_beat
 			);
 
+			y_beat_abs = fabs(cirbuf_y_hpf_beat[cirbuf_idx]);
+
 			// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
 			float transient_thresh_adc = (float)adc_reads[ADC_RANK_TRANSIENT_THRESH];
-			const float transient_thresh_scale = 3.0 / 65535.0; // Reduce 3.0 to make more sensitive
-			float transient_thresh = (1.0f + transient_thresh_adc * transient_thresh_scale ) * intensity;
+//			const float transient_thresh_scale = 100.0 / 4095.0; // Reduce first term to make more sensitive
+//			transient_thresh = (1.0f + transient_thresh_adc * transient_thresh_scale ) * intensity;
+			transient_thresh = transient_thresh_adc * 300.0 / 4095.0;
 
 			// Beat detect threshold
-			if (cirbuf_y_hpf_beat[cirbuf_idx] > transient_thresh)
+			if (y_beat_abs > transient_thresh)
 			{
 				transient_present++;
 			}
@@ -282,6 +280,11 @@ uint32_t refresh_cntr = 0;
 uint8_t transient_locations[NUM_LEDS];
 float led_transient_component[NUM_LEDS];
 
+// Each color channel intensity component oscillates at different frequencies and
+// is dependent on measured intensity. Periods are measured in number of LED refresh cycles.
+const float led_chan_periods[NUM_LED_CHANNELS] = {500, 600, 700};
+uint32_t led_chan_periods_lcm;
+
 float intensity_factor;
 float led_intensity_component[NUM_LED_CHANNELS];
 
@@ -313,11 +316,10 @@ void config_led_s(Event evt){
 			LL_TIM_GenerateEvent_UPDATE(TIM2);
 
 			// Configure for led_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
-			// Update refresh counter
-			refresh_cntr += 1;
+			// Update refresh counter, rollover on LCM of periods
+			refresh_cntr = (refresh_cntr + 1) % led_chan_periods_lcm;
 
 			// Update transient component of LEDs based on previous value and decay rate
-
 			for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
 				const float decay_factor = 0.9;
 				led_transient_component[idx] = decay_factor * led_transient_component[idx];
@@ -325,7 +327,7 @@ void config_led_s(Event evt){
 
 			// Define constant that compares how many refresh cycles need to occur before
 			// transient pulse "moves" to the next LED.
-			const uint8_t x_dot_over_refresh_rate = 3;
+			const uint8_t x_dot_over_refresh_rate = 1;
 
 			// If rollover occurred based on x_dot_over_refresh_rate
 			if (refresh_cntr % x_dot_over_refresh_rate == 0){
@@ -338,13 +340,15 @@ void config_led_s(Event evt){
 				if (transient_present > 0){
 					// Start transient on first LED
 					transient_locations[0] = 1;
-
-					// Reset Transient counter
-					transient_present = 0;
+				} else{
+					transient_locations[0] = 0;
 				}
 
+				// Reset Transient counter
+				transient_present = 0;
+
 				// In any location where a transient has just moved, set led_transient_component to 1
-				for (uint8_t idx; idx < NUM_LEDS; idx++){
+				for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
 					if (transient_locations[idx] > 0){
 						led_transient_component[idx] = 1.0f;
 					}
@@ -352,36 +356,28 @@ void config_led_s(Event evt){
 			}
 
 			// Now calculate intensity component of LEDs
-			// Each color channel intensity component oscillates at different frequencies and
-			// is dependent on measured intensity. Periods are measured in number of LED refresh cycles.
-			const float periods[NUM_LED_CHANNELS] = {500, 600, 700};
-			for (uint8_t idx = 0; idx < NUM_LED_CHANNELS; idx++){
+			for (uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
 				// Calculate led intensity component based on recorded intensity and max intensity
 				// Max intensity estimated by experimentation (blowing on mic).
 				// Goal is for intensity_factor to be between 0 and 1. Ceiling of 1 by design.
 				intensity_factor = fminf(intensity / 900.0, 1.0);
-				led_intensity_component[idx] = intensity_factor * (sin((float)refresh_cntr / periods[idx]) + 1)/2;
+				led_intensity_component[chan_idx] = intensity_factor * (sin((float)refresh_cntr / led_chan_periods[chan_idx]) + 1)/2;
 			}
 
 			// Cycle through each LED and each color channel
 			uint32_t ccr_idx = 0;
 			for(int16_t led_idx = 0; led_idx < NUM_LEDS; led_idx++){
 				for(uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
-//					// Calculate channel color for this LED by scaling and combining intensity and transient component
-//					const float transient_coef = 0.3;
-					const float transient_coef = 0.0;
-//					i_and_t = led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx];
-					i_and_t = led_intensity_component[chan_idx];
-//
-//					// Scale intensity and transient components so roughly between 0 and 255
-					i_and_t_scaled = i_and_t * (255.0/(1.0 + transient_coef));
-//
-//					// Calculate global brightness gain based on ADC read channel (potentiometer)
-					brightness_gain = ((float)adc_reads[ADC_RANK_BRIGHTNESS] * 10.0) / 4095.0;
-//
-//					// Put all values together to determine intensity for this LED channel
-					led_vals[led_idx][chan_idx] = (uint8_t)(fminf(brightness_gain * i_and_t_scaled, 255.0));
-//					led_vals[led_idx][chan_idx] = (uint8_t)(led_intensity_component[chan_idx] * 255.0);
+					// Calculate channel color for this LED by scaling and combining intensity and transient component
+					// Scale intensity and transient components so roughly between 0 and 255
+					const float transient_coef = 0.1;
+					i_and_t = (led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx]) /(1.0 + transient_coef);
+
+					// Calculate global brightness gain based on ADC read channel (potentiometer)
+					brightness_gain = ((float)adc_reads[ADC_RANK_BRIGHTNESS] * 255.0) / 4095.0;
+
+					// Put all values together to determine intensity for this LED channel
+					led_vals[led_idx][chan_idx] = (uint8_t)(fminf(brightness_gain * i_and_t, 255.0));
 
 					// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
 					for(int8_t bit_idx = 7; bit_idx >=0; bit_idx--){
@@ -488,16 +484,19 @@ int main(void)
   	tau_over_T_y_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
 
   	// Intensity signal (slow LPF envelope filter)
-  	float tau_intensity = 1.5;
+//  	float tau_intensity = 1.5;
+  	float tau_intensity = 3.0;
   	tau_over_T_intensity = (tau_intensity / T_s);
 
-  	// Transient capturing envelope filter
-  	float tau_y_env = 0.25;
-  	tau_over_T_y_env = (int32_t)(tau_y_env / T_s);
-
-  	// Apply additional HPF for beat detect
-  	float f_n_hpf_beat = 30;
+  	// HPF for beat detect
+  	float f_n_hpf_beat = 3000;
   	tau_over_T_y_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
+
+  	// Calculate LCM for LED periods
+  	led_chan_periods_lcm = 0;
+  	for (uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
+  		led_chan_periods_lcm += (uint32_t)led_chan_periods[chan_idx];
+  	}
 
 
   	// Peripheral Configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
