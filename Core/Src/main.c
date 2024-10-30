@@ -235,9 +235,8 @@ void mic_s(Event evt){
 
 			// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
 			float transient_thresh_adc = (float)adc_reads[ADC_RANK_TRANSIENT_THRESH];
-//			const float transient_thresh_scale = 100.0 / 4095.0; // Reduce first term to make more sensitive
-//			transient_thresh = (1.0f + transient_thresh_adc * transient_thresh_scale ) * intensity;
-			transient_thresh = transient_thresh_adc * 300.0 / 4095.0;
+			const float transient_thresh_scale = 300.0 / 4095.0;
+			transient_thresh = transient_thresh_adc * transient_thresh_scale;
 
 			// Beat detect threshold
 			if (y_beat_abs > transient_thresh)
@@ -371,10 +370,12 @@ void config_led_s(Event evt){
 					// Calculate channel color for this LED by scaling and combining intensity and transient component
 					// Scale intensity and transient components so roughly between 0 and 255
 					const float transient_coef = 0.1;
-					i_and_t = (led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx]) /(1.0 + transient_coef);
+					const float one_over_one_plus_transient_coef = 1.0 / (1.0 + transient_coef); // Pre-calculate to speed up
+					i_and_t = (led_intensity_component[chan_idx] + transient_coef*led_transient_component[led_idx]) * one_over_one_plus_transient_coef;
 
 					// Calculate global brightness gain based on ADC read channel (potentiometer)
-					brightness_gain = ((float)adc_reads[ADC_RANK_BRIGHTNESS] * 255.0) / 4095.0;
+					const float brightness_gain_scale = 255.0 / 4095.0; // Pre-calculate to speed up
+					brightness_gain = (float)adc_reads[ADC_RANK_BRIGHTNESS] * brightness_gain_scale;
 
 					// Put all values together to determine intensity for this LED channel
 					led_vals[led_idx][chan_idx] = (uint8_t)(fminf(brightness_gain * i_and_t, 255.0));
