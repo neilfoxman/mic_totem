@@ -44,7 +44,7 @@ int32_t ApplyFirstDifferenceEnvelopeLPF(int32_t y_minus_1, int32_t x_0, int32_t 
 float ApplyFirstDifferenceLPF_float(float y_minus_1, float x_0, float tau_over_T)
 {
 	// Reference https://neilfoxman.com/?page_id=1714#First_Difference_Lowpass_Filter
-	return (float)((tau_over_T * y_minus_1 + x_0)/(tau_over_T + 1));
+	return (tau_over_T * y_minus_1 + x_0)/(tau_over_T + 1.0);
 }
 
 float ApplyFirstDifferenceEnvelopeLPF_float(float y_minus_1, float x_0, float tau_over_T)
@@ -75,5 +75,5 @@ float ApplyFirstDifferenceHPF_float(float y_minus_1, float x_0, float x_minus_1,
 
 float CalcTauOverTFromFloat(float f_n, float f_s)
 {
-	return (uint16_t)(f_s / (2 * pi * f_n));
+	return f_s / (2 * pi * f_n);
 }
