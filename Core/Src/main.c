@@ -81,17 +81,12 @@ uint32_t proc_time;
 // OVR Event tracking variable
 uint32_t ovr_cnt = 0;
 
-// Define States
-
-// Prototypes
+// FSM State Prototypes
 void config_mic_s(Event evt);
 void mic_s(Event evt);
 void config_led_s(Event evt);
 void led_s(Event evt);
 
-// Declare Sample Frequency, To be calculated later by getting timer register value
-float T_s;
-float f_s;
 
 // Declare ADC read variables
 uint16_t adc_reads[5];
@@ -99,18 +94,37 @@ uint16_t adc_reads[5];
 #define ADC_RANK_BRIGHTNESS 1
 #define ADC_RANK_TRANSIENT_SENSITIVITY 2
 #define ADC_RANK_TRANSIENT_INTENSITY_RATIO 3
-#define ADC_RANK_INTENSITY_TAU 4
+#define ADC_RANK_TAU_INTENSITY 4
 
-uint32_t mic_arr = 4000;
-float intensity_tau_adc;
-float tau_intensity_min = 0.01;
-float tau_intensity_max = 2.0;
-float tau_intensity;
-float tau_over_T_intensity;
-float intensity;
-float transient_sensitivity_adc;
-float transient_sensitivity;
-float transient_thresh;
+// Common variables for all DSP circular buffers.
+#define CIRBUF_LEN 255
+uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
+
+// Mic signal
+int32_t cirbuf_mic[CIRBUF_LEN];
+
+// Incoming signal HPF
+int32_t cirbuf_hpf[CIRBUF_LEN];
+int32_t tau_over_T_hpf;
+int32_t gain_hpf;
+
+// Intensity signal (slow LPF envelope filter)
+int32_t cirbuf_intensity[CIRBUF_LEN];
+int32_t tau_over_T_intensity;
+int32_t gain_intensity;
+
+// Transient Sensitivity configuration variables
+int32_t transient_thresh;
+
+// HPF for beat detect
+int32_t cirbuf_hpf_beat[CIRBUF_LEN];
+int32_t tau_over_T_hpf_beat;
+int32_t gain_hpf_beat;
+int32_t transient_present = 0; // This variable gets reset every tim the LEDs are updated
+
+// Number of mic samples before switch states to set LEDs
+uint32_t num_samples_before_LED = 1000;
+uint32_t num_samples_taken = 0;
 
 void config_mic_s(Event evt){
 	switch(evt){
@@ -135,19 +149,40 @@ void config_mic_s(Event evt){
 				LL_TIM_OC_SetCompareCH1(TIM2, 0);
 
 				// Configure for mic_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
-				// Calculate time constant for intensity LPF
-				intensity_tau_adc = (float)(4095 - adc_reads[ADC_RANK_INTENSITY_TAU]);
-				tau_intensity = tau_intensity_min + ( (tau_intensity_max - tau_intensity_min) / (4095.0) ) * intensity_tau_adc;
-				tau_over_T_intensity = tau_intensity / T_s;
+        // Define Sample Frequency
+        const uint32_t mic_arr = 2420;
+        LL_TIM_SetAutoReload(TIM2, mic_arr); // Set timer ARR such that DSP can complete in one cycle
+        float T_s = (float)mic_arr / 64E6;
+        float f_s = 1.0 / T_s;
 
+        // Incoming signal HPF
+        const float f_n_hpf = 1000;
+        tau_over_T_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
+        gain_hpf = 50 * ( tau_over_T_hpf + 1 );
+
+				// Calculate time constant for intensity LPF based on last value of ADC read
+        const float tau_intensity_min = 0.01;
+        const float tau_intensity_max = 2.0;
+				uint16_t tau_intensity_adc = 4095 - adc_reads[ADC_RANK_TAU_INTENSITY];
+				float tau_intensity = tau_intensity_min + ( (tau_intensity_max - tau_intensity_min) / (4095.0) ) * (float)tau_intensity_adc;
+				tau_over_T_intensity = (uint32_t)(tau_intensity / T_s);
+        gain_intensity = 10 * ( tau_over_T_intensity + 1 );
+
+        // HPF for beat detect
+        const float f_n_hpf_beat = 3000;
+        tau_over_T_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
+        gain_hpf_beat = 10 * ( tau_over_T_hpf_beat + 1 );
 
 				// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
-				transient_sensitivity_adc = (float)(4095 - adc_reads[ADC_RANK_TRANSIENT_SENSITIVITY]); // Make Numerator smaller to make min sensitivity less sensitive.
-				transient_sensitivity = transient_sensitivity_adc * (40.0 / 4095.0);
-				transient_thresh = intensity * transient_sensitivity;
+				uint16_t transient_sensitivity_adc = 4095 - adc_reads[ADC_RANK_TRANSIENT_SENSITIVITY];
+				int32_t transient_sensitivity = ( transient_sensitivity_adc * 40 ) / 4095; // Make numerator smaller to make more sensitive
+				transient_thresh = cirbuf_intensity[cirbuf_idx] * transient_sensitivity; // Use last recorded value of intensity and sensitivity factor to determine threshold for this round of recordings
 
-				// Set timer ARR such that DSP can complete in one cycle
-				LL_TIM_SetAutoReload(TIM2, mic_arr);
+        // Reset circular buffer index
+        cirbuf_idx = 0;
+
+        // Reset sample tracker
+			  num_samples_taken = 0;
 
 				// Clear any pending status registers
 				CLEAR_REG(TIM2->SR);
@@ -177,39 +212,9 @@ void config_mic_s(Event evt){
 		}
 }
 
-
-// Define circular buffers used for DSP.
-#define CIRBUF_LEN 255
-uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
-float cirbuf_mic[CIRBUF_LEN];
-
-// Incoming signal HPF
-float cirbuf_y_hpf[CIRBUF_LEN];
-float tau_over_T_y_hpf;
-
-// Intensity signal (slow LPF envelope filter)
-// Intensity needs to be done in float math due to high tau/T relative to x[n]
-float cirbuf_intensity[CIRBUF_LEN];
-
-// HPF for beat detect
-float cirbuf_y_hpf_beat[CIRBUF_LEN];
-float tau_over_T_y_hpf_beat;
-
-// Rectified beat detect signal
-float y_beat_abs;
-
-// Transient detector counter
-int32_t transient_present = 0;
-
-// Number of mic samples before switch states to set LEDs
-uint32_t num_samples_before_LED = 1000;
-uint32_t num_samples_taken = 0;
-
 void mic_s(Event evt){
 	switch(evt){
 		case ENTER:
-			// Reset sample tracker
-			num_samples_taken = 0;
 			break;
 		case ADC_OVR:
 			ovr_cnt++; // Increment counter (for debugging)
@@ -221,40 +226,39 @@ void mic_s(Event evt){
 			// Process data
 			// Get indexes of nearby values for difference equations
 			uint8_t cirbuf_idx_minus_1 = ArrayIdxToCirBufIdx(cirbuf_idx, -1, CIRBUF_LEN);
-//			uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
+      // uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
 
 			// Save new mic read every sample
-			cirbuf_mic[cirbuf_idx] = (float)adc_reads[ADC_RANK_MIC];
+			cirbuf_mic[cirbuf_idx] = adc_reads[ADC_RANK_MIC];
 
-			// Apply HPF
-			cirbuf_y_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF_float(
-				cirbuf_y_hpf[cirbuf_idx_minus_1],
-				cirbuf_mic[cirbuf_idx],
-				cirbuf_mic[cirbuf_idx_minus_1],
-				tau_over_T_y_hpf
+			// Apply HPF to incoming signal
+			cirbuf_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
+        cirbuf_hpf[cirbuf_idx_minus_1],
+        cirbuf_mic[cirbuf_idx],
+        cirbuf_mic[cirbuf_idx_minus_1],
+        tau_over_T_hpf,
+        gain_hpf
 			);
 
 			// Determine Intensity
-//			cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceLPF_float(
-			cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF_float(
+			cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
 				cirbuf_intensity[cirbuf_idx_minus_1],
-				cirbuf_y_hpf[cirbuf_idx],
-				tau_over_T_intensity
+				cirbuf_hpf[cirbuf_idx],
+				tau_over_T_intensity,
+        gain_intensity
 			);
-			intensity = cirbuf_intensity[cirbuf_idx];
 
 			// Beat Detect HPF
-			cirbuf_y_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF_float(
-				cirbuf_y_hpf_beat[cirbuf_idx_minus_1],
+			cirbuf_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
+				cirbuf_hpf_beat[cirbuf_idx_minus_1],
 				cirbuf_mic[cirbuf_idx],
 				cirbuf_mic[cirbuf_idx_minus_1],
-				tau_over_T_y_hpf_beat
+				tau_over_T_hpf_beat,
+        gain_hpf_beat
 			);
 
-			y_beat_abs = fabs(cirbuf_y_hpf_beat[cirbuf_idx]);
-
 			// Beat detect threshold
-			if (y_beat_abs > transient_thresh)
+			if (abs(cirbuf_hpf_beat[cirbuf_idx]) > transient_thresh)
 			{
 				transient_present++;
 			}
@@ -379,7 +383,7 @@ void config_led_s(Event evt){
 				// Calculate led intensity component based on recorded intensity and max intensity
 				// Max intensity estimated by experimentation (blowing on mic).
 				// Goal is for intensity_factor to be between 0 and 1. Ceiling of 1 by design.
-				intensity_factor = fminf(intensity, 1.0);
+				intensity_factor = fminf(cirbuf_intensity[cirbuf_idx], 1.0);
 				led_intensity_component[chan_idx] = intensity_factor * ( sin((float)refresh_cntr / led_chan_periods[chan_idx]) + 1) * 0.5;
 			}
 
@@ -496,21 +500,6 @@ int main(void)
   MX_TIM2_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-	// Pre-calculate all constants used for DSP ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  	// Define Sample Frequency
-  	T_s = (float)mic_arr / 64E6;
-  	f_s = 1.0 / T_s;
-
-  	// Incoming signal HPF
-  	float f_n_hpf = 1000;
-  	tau_over_T_y_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
-
-  	// Intensity signal (slow LPF envelope filter)
-  	tau_over_T_intensity = (tau_intensity_max / T_s); // Initial value, gets changed on the fly
-
-  	// HPF for beat detect
-  	float f_n_hpf_beat = 3000;
-  	tau_over_T_y_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
 
   	// Calculate LCM for LED periods
   	led_chan_periods_lcm = 0;

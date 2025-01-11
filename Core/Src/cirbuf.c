@@ -22,15 +22,18 @@ float ArrayIdxToCirBufIdx(
 	return (start_idx + array_idx) % cirbuf_len;
 }
 
-int32_t ApplyFirstDifferenceLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T)
+int32_t ApplyFirstDifferenceLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T, int32_t gain)
 {
+	/*
+	 * NOTE: Returns
+	 */
 	// Reference https://neilfoxman.com/?page_id=1714#First_Difference_Lowpass_Filter
-	return (tau_over_T * y_minus_1 + x_0)/(tau_over_T + 1);
+	return (tau_over_T * y_minus_1 + gain * x_0)/(tau_over_T + 1);
 }
 
-int32_t ApplyFirstDifferenceEnvelopeLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T)
+int32_t ApplyFirstDifferenceEnvelopeLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T, int32_t gain)
 {
-	int32_t y_lpf = ApplyFirstDifferenceLPF(y_minus_1, x_0, tau_over_T);
+	int32_t y_lpf = ApplyFirstDifferenceLPF(y_minus_1, x_0, tau_over_T, gain);
 	if (x_0 > y_lpf)
 	{
 		return x_0;
@@ -61,10 +64,10 @@ float ApplyFirstDifferenceEnvelopeLPF_float(float y_minus_1, float x_0, float ta
 	}
 }
 
-int32_t ApplyFirstDifferenceHPF(int32_t y_minus_1, int32_t x_0, int32_t x_minus_1, int32_t tau_over_T)
+int32_t ApplyFirstDifferenceHPF(int32_t y_minus_1, int32_t x_0, int32_t x_minus_1, int32_t tau_over_T, int32_t gain)
 {
 	// Reference https://neilfoxman.com/?page_id=1714#First_Difference_Highpass_Filter
-	return (tau_over_T*(y_minus_1 + x_0 - x_minus_1)) / (tau_over_T + 1);
+	return (tau_over_T * (y_minus_1 + gain * (x_0 - x_minus_1) ) ) / (tau_over_T + 1);
 }
 
 float ApplyFirstDifferenceHPF_float(float y_minus_1, float x_0, float x_minus_1, float tau_over_T)
@@ -73,7 +76,7 @@ float ApplyFirstDifferenceHPF_float(float y_minus_1, float x_0, float x_minus_1,
 	return (float)(tau_over_T*(y_minus_1 + x_0 - x_minus_1)) / (tau_over_T + 1);
 }
 
-float CalcTauOverTFromFloat(float f_n, float f_s)
+int32_t CalcTauOverTFromFloat(float f_n, float f_s)
 {
-	return f_s / (2 * pi * f_n);
+	return (int32_t)( f_s / (2 * pi * f_n) );
 }
