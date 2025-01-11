@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-float ArrayIdxToCirBufIdx(
+uint8_t ArrayIdxToCirBufIdx(
 		uint8_t start_idx,
 		int8_t array_idx,
 		uint8_t cirbuf_len);

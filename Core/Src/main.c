@@ -98,7 +98,8 @@ uint16_t adc_reads[5];
 
 // Common variables for all DSP circular buffers.
 #define CIRBUF_LEN 255
-uint8_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
+uint16_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
+uint16_t cirbuf_idx_minus_1 = CIRBUF_LEN-1;
 
 // Mic signal
 int32_t cirbuf_mic[CIRBUF_LEN];
@@ -109,9 +110,9 @@ int32_t tau_over_T_hpf;
 int32_t gain_hpf;
 
 // Intensity signal (slow LPF envelope filter)
-int32_t cirbuf_intensity[CIRBUF_LEN];
-int32_t tau_over_T_intensity;
-int32_t gain_intensity;
+uint32_t cirbuf_intensity[CIRBUF_LEN];
+uint32_t tau_over_T_intensity;
+uint32_t gain_intensity;
 
 // Transient Sensitivity configuration variables
 int32_t transient_thresh;
@@ -149,40 +150,42 @@ void config_mic_s(Event evt){
 				LL_TIM_OC_SetCompareCH1(TIM2, 0);
 
 				// Configure for mic_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
-        // Define Sample Frequency
-        const uint32_t mic_arr = 2420;
-        LL_TIM_SetAutoReload(TIM2, mic_arr); // Set timer ARR such that DSP can complete in one cycle
-        float T_s = (float)mic_arr / 64E6;
-        float f_s = 1.0 / T_s;
+				// Define Sample Frequency
+				const uint32_t mic_arr = 800;
+				LL_TIM_SetAutoReload(TIM2, mic_arr); // Set timer ARR such that DSP can complete in one cycle
+				float T_s = (float)mic_arr / 64E6;
+				float f_s = 1.0 / T_s;
 
-        // Incoming signal HPF
-        const float f_n_hpf = 1000;
-        tau_over_T_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
-        gain_hpf = 50 * ( tau_over_T_hpf + 1 );
+				// Incoming signal HPF
+				const float f_n_hpf = 1000;
+				tau_over_T_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
+//				gain_hpf = 50 * ( tau_over_T_hpf + 1 );
+				gain_hpf = 100;
 
-				// Calculate time constant for intensity LPF based on last value of ADC read
-        const float tau_intensity_min = 0.01;
-        const float tau_intensity_max = 2.0;
+						// Calculate time constant for intensity LPF based on last value of ADC read
+				const float tau_intensity_min = 0.01;
+				const float tau_intensity_max = 2.0;
 				uint16_t tau_intensity_adc = 4095 - adc_reads[ADC_RANK_TAU_INTENSITY];
 				float tau_intensity = tau_intensity_min + ( (tau_intensity_max - tau_intensity_min) / (4095.0) ) * (float)tau_intensity_adc;
 				tau_over_T_intensity = (uint32_t)(tau_intensity / T_s);
-        gain_intensity = 10 * ( tau_over_T_intensity + 1 );
+//				gain_intensity = 10 * ( tau_over_T_intensity + 1 );
+				gain_intensity = 1;
 
-        // HPF for beat detect
-        const float f_n_hpf_beat = 3000;
-        tau_over_T_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
-        gain_hpf_beat = 10 * ( tau_over_T_hpf_beat + 1 );
+				// HPF for beat detect
+				const float f_n_hpf_beat = 3000;
+				tau_over_T_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
+				gain_hpf_beat = 10 * ( tau_over_T_hpf_beat + 1 );
 
 				// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
 				uint16_t transient_sensitivity_adc = 4095 - adc_reads[ADC_RANK_TRANSIENT_SENSITIVITY];
 				int32_t transient_sensitivity = ( transient_sensitivity_adc * 40 ) / 4095; // Make numerator smaller to make more sensitive
 				transient_thresh = cirbuf_intensity[cirbuf_idx] * transient_sensitivity; // Use last recorded value of intensity and sensitivity factor to determine threshold for this round of recordings
 
-        // Reset circular buffer index
-        cirbuf_idx = 0;
+				// Reset circular buffer index
+				cirbuf_idx = 0;
 
-        // Reset sample tracker
-			  num_samples_taken = 0;
+				// Reset sample tracker
+				num_samples_taken = 0;
 
 				// Clear any pending status registers
 				CLEAR_REG(TIM2->SR);
@@ -223,48 +226,47 @@ void mic_s(Event evt){
 			// Increment sample counter
 			num_samples_taken++;
 
-			// Process data
-			// Get indexes of nearby values for difference equations
-			uint8_t cirbuf_idx_minus_1 = ArrayIdxToCirBufIdx(cirbuf_idx, -1, CIRBUF_LEN);
-      // uint8_t cirbuf_idx_minus_2 = ArrayIdxToCirBufIdx(cirbuf_idx, -2, CIRBUF_LEN);
+			// Increment circular buffer index to store next read from ADC
+			cirbuf_idx_minus_1 = cirbuf_idx;
+			cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
+
 
 			// Save new mic read every sample
 			cirbuf_mic[cirbuf_idx] = adc_reads[ADC_RANK_MIC];
 
-			// Apply HPF to incoming signal
-			cirbuf_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
-        cirbuf_hpf[cirbuf_idx_minus_1],
-        cirbuf_mic[cirbuf_idx],
-        cirbuf_mic[cirbuf_idx_minus_1],
-        tau_over_T_hpf,
-        gain_hpf
-			);
+			if (cirbuf_idx > 1) {
+				// Apply HPF to incoming signal
+				cirbuf_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
+					cirbuf_hpf[cirbuf_idx_minus_1],
+					cirbuf_mic[cirbuf_idx],
+					cirbuf_mic[cirbuf_idx_minus_1],
+					tau_over_T_hpf,
+					gain_hpf
+				);
 
-			// Determine Intensity
-			cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
-				cirbuf_intensity[cirbuf_idx_minus_1],
-				cirbuf_hpf[cirbuf_idx],
-				tau_over_T_intensity,
-        gain_intensity
-			);
+				// Determine Intensity
+				cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
+					cirbuf_intensity[cirbuf_idx_minus_1],
+					cirbuf_hpf[cirbuf_idx],
+					tau_over_T_intensity,
+					gain_intensity
+				);
 
-			// Beat Detect HPF
-			cirbuf_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
-				cirbuf_hpf_beat[cirbuf_idx_minus_1],
-				cirbuf_mic[cirbuf_idx],
-				cirbuf_mic[cirbuf_idx_minus_1],
-				tau_over_T_hpf_beat,
-        gain_hpf_beat
-			);
+				// Beat Detect HPF
+				cirbuf_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
+					cirbuf_hpf_beat[cirbuf_idx_minus_1],
+					cirbuf_mic[cirbuf_idx],
+					cirbuf_mic[cirbuf_idx_minus_1],
+					tau_over_T_hpf_beat,
+					gain_hpf_beat
+				);
 
-			// Beat detect threshold
-			if (abs(cirbuf_hpf_beat[cirbuf_idx]) > transient_thresh)
-			{
-				transient_present++;
+				// Beat detect threshold
+				if (abs(cirbuf_hpf_beat[cirbuf_idx]) > transient_thresh)
+				{
+					transient_present++;
+				}
 			}
-
-			// FINAL: Increment circular buffer index to store next read from ADC
-			cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
 
 			// Capture time at end of processing for setting good sample frequency
 			proc_time = TIM2->CNT;
