@@ -127,7 +127,7 @@ int32_t transient_present = 0; // This variable gets reset every tim the LEDs ar
 uint32_t num_samples_before_LED = 1000;
 uint32_t num_samples_taken = 0;
 
-void config_mic_s(Event evt){
+inline void config_mic_s(Event evt){
 	switch(evt){
 			case ENTER:
 				// Disable led_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -215,7 +215,7 @@ void config_mic_s(Event evt){
 		}
 }
 
-void mic_s(Event evt){
+inline void mic_s(Event evt){
 	switch(evt){
 		case ENTER:
 			break;
@@ -313,7 +313,7 @@ float i_and_t;
 float i_and_t_scaled;
 float brightness_gain;
 
-void config_led_s(Event evt){
+inline void config_led_s(Event evt){
     switch(evt){
 		case ENTER:
 			// Disable mic_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -447,7 +447,7 @@ void config_led_s(Event evt){
     }
 }
 
-void led_s(Event evt){
+inline void led_s(Event evt){
     switch(evt){
 		case ENTER:
 			// By this point, sampling the ADCs and running DSP is assumed to have kept

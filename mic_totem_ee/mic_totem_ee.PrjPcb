@@ -179,12 +179,12 @@ Variation1=Designator=C6|UniqueId=\YEDKLZKC|Kind=1|AlternatePart=
 ParamVariationCount=0
 
 [Parameter1]
-Name=Revision
-Value=3.1
-
-[Parameter2]
 Name=PCAName
 Value=Mic_Totem
+
+[Parameter2]
+Name=Revision
+Value=3.1
 
 [Configuration1]
 Name=Sources
