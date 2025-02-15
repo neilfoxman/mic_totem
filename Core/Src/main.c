@@ -91,43 +91,44 @@ void led_s(Event evt);
 // Declare ADC read variables
 uint16_t adc_reads[5];
 #define ADC_RANK_MIC 0
-#define ADC_RANK_BRIGHTNESS 1
-#define ADC_RANK_TRANSIENT_SENSITIVITY 2
-#define ADC_RANK_TRANSIENT_INTENSITY_RATIO 3
-#define ADC_RANK_TAU_INTENSITY 4
+#define ADC_RANK_INTENSITY_SENSITIVITY 1
+#define ADC_RANK_INTENSITY_GAIN 2
+#define ADC_RANK_TRANSIENT_SENSITIVITY 3
+#define ADC_RANK_TRANSIENT_GAIN 4
 
 // Common variables for all DSP circular buffers.
-#define CIRBUF_LEN 255
-uint16_t cirbuf_idx = 0; // Index used for tracking current location in circular buffers
-uint16_t cirbuf_idx_minus_1 = CIRBUF_LEN-1;
+#define MIC_CIRBUF_LEN 255
+uint16_t mic_cirbuf_idx = 0; // Index used for tracking current location in circular buffers
+uint16_t mic_cirbuf_idx_minus_1 = MIC_CIRBUF_LEN-1;
 
 // Mic signal
-int32_t cirbuf_mic[CIRBUF_LEN];
+float f_s;
+int32_t cirbuf_mic[MIC_CIRBUF_LEN];
 
 // Incoming signal HPF
-int32_t cirbuf_hpf[CIRBUF_LEN];
+int32_t cirbuf_hpf[MIC_CIRBUF_LEN];
 int32_t tau_over_T_hpf;
 int32_t gain_hpf;
 
-// Intensity signal (slow LPF envelope filter)
-uint32_t cirbuf_intensity[CIRBUF_LEN];
-uint32_t tau_over_T_intensity;
-uint32_t gain_intensity;
+// Envelope Signal
+int32_t cirbuf_env[MIC_CIRBUF_LEN];
+int32_t gain_env;
+int32_t cirbuf_env_scaled[MIC_CIRBUF_LEN];
 
 // Transient Sensitivity configuration variables
 int32_t transient_thresh;
 
 // HPF for beat detect
-int32_t cirbuf_hpf_beat[CIRBUF_LEN];
+int32_t cirbuf_hpf_beat[MIC_CIRBUF_LEN];
 int32_t tau_over_T_hpf_beat;
 int32_t gain_hpf_beat;
 int32_t transient_present = 0; // This variable gets reset every tim the LEDs are updated
 
 // Number of mic samples before switch states to set LEDs
-uint32_t num_samples_before_LED = 1000;
+uint32_t num_samples_before_LED = 10000;
 uint32_t num_samples_taken = 0;
 
-inline void config_mic_s(Event evt){
+void config_mic_s(Event evt){
 	switch(evt){
 			case ENTER:
 				// Disable led_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -151,38 +152,28 @@ inline void config_mic_s(Event evt){
 
 				// Configure for mic_s ~~~~~~~~~~~~~~~~~~~~~~~~~~
 				// Define Sample Frequency
-				const uint32_t mic_arr = 800;
+				const uint32_t mic_arr = 950;
 				LL_TIM_SetAutoReload(TIM2, mic_arr); // Set timer ARR such that DSP can complete in one cycle
 				float T_s = (float)mic_arr / 64E6;
-				float f_s = 1.0 / T_s;
+				f_s = 1.0 / T_s;
 
 				// Incoming signal HPF
-				const float f_n_hpf = 1000;
+				const float f_n_hpf = 20;
 				tau_over_T_hpf = CalcTauOverTFromFloat(f_n_hpf, f_s);
 //				gain_hpf = 50 * ( tau_over_T_hpf + 1 );
-				gain_hpf = 100;
+				gain_hpf = 1;
 
-						// Calculate time constant for intensity LPF based on last value of ADC read
-				const float tau_intensity_min = 0.01;
-				const float tau_intensity_max = 2.0;
-				uint16_t tau_intensity_adc = 4095 - adc_reads[ADC_RANK_TAU_INTENSITY];
-				float tau_intensity = tau_intensity_min + ( (tau_intensity_max - tau_intensity_min) / (4095.0) ) * (float)tau_intensity_adc;
-				tau_over_T_intensity = (uint32_t)(tau_intensity / T_s);
-//				gain_intensity = 10 * ( tau_over_T_intensity + 1 );
-				gain_intensity = 1;
+				// Envelope signal
+				gain_env = 100;
 
 				// HPF for beat detect
-				const float f_n_hpf_beat = 3000;
+				const float f_n_hpf_beat = 10000;
 				tau_over_T_hpf_beat = CalcTauOverTFromFloat(f_n_hpf_beat, f_s);
-				gain_hpf_beat = 10 * ( tau_over_T_hpf_beat + 1 );
+				gain_hpf_beat = 1;
 
 				// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
 				uint16_t transient_sensitivity_adc = 4095 - adc_reads[ADC_RANK_TRANSIENT_SENSITIVITY];
-				int32_t transient_sensitivity = ( transient_sensitivity_adc * 40 ) / 4095; // Make numerator smaller to make more sensitive
-				transient_thresh = cirbuf_intensity[cirbuf_idx] * transient_sensitivity; // Use last recorded value of intensity and sensitivity factor to determine threshold for this round of recordings
-
-				// Reset circular buffer index
-				cirbuf_idx = 0;
+				transient_thresh = transient_sensitivity_adc;
 
 				// Reset sample tracker
 				num_samples_taken = 0;
@@ -215,7 +206,7 @@ inline void config_mic_s(Event evt){
 		}
 }
 
-inline void mic_s(Event evt){
+void mic_s(Event evt){
 	switch(evt){
 		case ENTER:
 			break;
@@ -227,53 +218,61 @@ inline void mic_s(Event evt){
 			num_samples_taken++;
 
 			// Increment circular buffer index to store next read from ADC
-			cirbuf_idx_minus_1 = cirbuf_idx;
-			cirbuf_idx = (cirbuf_idx + 1) % CIRBUF_LEN;
-
+			mic_cirbuf_idx_minus_1 = mic_cirbuf_idx;
+			mic_cirbuf_idx = (mic_cirbuf_idx + 1) % MIC_CIRBUF_LEN;
 
 			// Save new mic read every sample
-			cirbuf_mic[cirbuf_idx] = adc_reads[ADC_RANK_MIC];
+			cirbuf_mic[mic_cirbuf_idx] = adc_reads[ADC_RANK_MIC];
 
-			if (cirbuf_idx > 1) {
-				// Apply HPF to incoming signal
-				cirbuf_hpf[cirbuf_idx] = ApplyFirstDifferenceHPF(
-					cirbuf_hpf[cirbuf_idx_minus_1],
-					cirbuf_mic[cirbuf_idx],
-					cirbuf_mic[cirbuf_idx_minus_1],
-					tau_over_T_hpf,
-					gain_hpf
-				);
+			// Apply HPF to incoming signal
+			cirbuf_hpf[mic_cirbuf_idx] = ApplyFirstDifferenceHPF(
+				cirbuf_hpf[mic_cirbuf_idx_minus_1],
+				cirbuf_mic[mic_cirbuf_idx],
+				cirbuf_mic[mic_cirbuf_idx_minus_1],
+				tau_over_T_hpf,
+				gain_hpf
+			);
 
-				// Determine Intensity
-				cirbuf_intensity[cirbuf_idx] = ApplyFirstDifferenceEnvelopeLPF(
-					cirbuf_intensity[cirbuf_idx_minus_1],
-					cirbuf_hpf[cirbuf_idx],
-					tau_over_T_intensity,
-					gain_intensity
-				);
+			// Envelope Signal to be used for intensity (downsampled and LPF version of envelope)
+			cirbuf_env[mic_cirbuf_idx] = ApplyFirstDifferenceEnvelopeLinear(
+				cirbuf_env[mic_cirbuf_idx_minus_1],
+				abs(cirbuf_hpf[mic_cirbuf_idx]),
+				gain_env
+			);
+			cirbuf_env_scaled[mic_cirbuf_idx] = cirbuf_env[mic_cirbuf_idx] / gain_env;
 
-				// Beat Detect HPF
-				cirbuf_hpf_beat[cirbuf_idx] = ApplyFirstDifferenceHPF(
-					cirbuf_hpf_beat[cirbuf_idx_minus_1],
-					cirbuf_mic[cirbuf_idx],
-					cirbuf_mic[cirbuf_idx_minus_1],
-					tau_over_T_hpf_beat,
-					gain_hpf_beat
-				);
+//			// Determine Intensity
+//			uint32_t filt_len = MIC_CIRBUF_LEN-1; // MIC_CIRBUF_LEN-1 is longest filter length possible without accruing errors
+//			cirbuf_intensity[mic_cirbuf_idx] = ApplyFIRLPF(
+//				cirbuf_env_scaled,
+//				mic_cirbuf_idx,
+//				filt_len,
+//				MIC_CIRBUF_LEN,
+//				&fir_lpf_accum
+//			);
+//			intensity = cirbuf_intensity[mic_cirbuf_idx] >> 3;
 
-				// Beat detect threshold
-				if (abs(cirbuf_hpf_beat[cirbuf_idx]) > transient_thresh)
-				{
-					transient_present++;
-				}
+			// Beat Detect HPF
+			cirbuf_hpf_beat[mic_cirbuf_idx] = ApplyFirstDifferenceHPF(
+				cirbuf_hpf_beat[mic_cirbuf_idx_minus_1],
+				cirbuf_mic[mic_cirbuf_idx],
+				cirbuf_mic[mic_cirbuf_idx_minus_1],
+				tau_over_T_hpf_beat,
+				gain_hpf_beat
+			);
+
+			// Beat detect threshold
+			if (abs(cirbuf_hpf_beat[mic_cirbuf_idx]) > transient_thresh)
+			{
+				transient_present++;
 			}
-
-			// Capture time at end of processing for setting good sample frequency
-			proc_time = TIM2->CNT;
 
 			if(num_samples_taken >= num_samples_before_LED){
 				transition(config_led_s);
 			}
+
+			// Capture time at end of processing for setting good sample frequency
+			proc_time = TIM2->CNT;
 			break;
 		default:
 			break;
@@ -288,32 +287,38 @@ uint8_t led_vals[NUM_LEDS][NUM_LED_CHANNELS];
 // Variables used when converting from bits to Timer CCR durations
 #define NUM_CCRS (NUM_LEDS * NUM_LED_CHANNELS * 8)
 uint32_t ccr_zero = 19;
-uint32_t ccr_one = 38;
+uint32_t ccr_one = 45;
 uint32_t ccr_sequence[NUM_CCRS];
 
 uint32_t led_arr = 79;
-//uint32_t led_arr = 1000;
 
 uint32_t refresh_cntr = 0;
 
-// Declare LED variables external from state machine for easier tracking/debugging
-uint8_t transient_locations[NUM_LEDS];
-float led_transient_component[NUM_LEDS];
-
 // Each color channel intensity component oscillates at different frequencies and
 // is dependent on measured intensity. Periods are measured in number of LED refresh cycles.
-const float led_chan_periods[NUM_LED_CHANNELS] = {500, 600, 700};
+const float led_chan_periods[NUM_LED_CHANNELS] = {20, 35, 40};
 uint32_t led_chan_periods_lcm;
 
-float intensity_factor;
+// Circular buffer variables for LED (updated once every time we switch to led_s
+//#define LED_CIRBUF_LEN 255
+#define LED_CIRBUF_LEN 25
+uint32_t led_cirbuf_idx = 0;
+
+// Intensity signal (downsampled envelope with LPF)
+int32_t cirbuf_env_downsample[LED_CIRBUF_LEN];
+int32_t intensity_lpf_accum = 0; // Accumulator used when applying LPF to store sum between samples
+int32_t cirbuf_intensity[LED_CIRBUF_LEN];
+uint32_t intensity;
+float intensity_gain;
+float intensity_scaled;
 float led_intensity_component[NUM_LED_CHANNELS];
-float transient_intensity_ratio;
 
+//// Declare LED variables external from state machine for easier tracking/debugging
+//uint8_t transient_locations[NUM_LEDS];
+//float led_transient_component[NUM_LEDS];
 float i_and_t;
-float i_and_t_scaled;
-float brightness_gain;
 
-inline void config_led_s(Event evt){
+void config_led_s(Event evt){
     switch(evt){
 		case ENTER:
 			// Disable mic_s configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -340,54 +345,65 @@ inline void config_led_s(Event evt){
 			// Update refresh counter, rollover on LCM of periods
 			refresh_cntr = (refresh_cntr + 1) % led_chan_periods_lcm;
 
-			// Fetch relevant values from ADC
-			float brightness_gain_adc = (float)adc_reads[ADC_RANK_BRIGHTNESS];
-			float transient_intensity_ratio_adc = (float)adc_reads[ADC_RANK_TRANSIENT_INTENSITY_RATIO];
+			// Update LED circular buffer index
+			led_cirbuf_idx = (led_cirbuf_idx + 1) % LED_CIRBUF_LEN;
 
-			// Update transient component of LEDs based on previous value and decay rate
-			for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
-				const float decay_factor = 0.9;
-				led_transient_component[idx] = decay_factor * led_transient_component[idx];
-			}
+			// Calculate intensity component of LEDs
+			intensity_gain = (float)(4095 - adc_reads[ADC_RANK_INTENSITY_GAIN]) * (3.0/4095.0);
+//			intensity_gain = 1;
+			cirbuf_env_downsample[led_cirbuf_idx] = cirbuf_env_scaled[mic_cirbuf_idx]; // Down-sample: assign last env value to intensity signal
 
-			// Define constant that compares how many refresh cycles need to occur before
-			// transient pulse "moves" to the next LED.
-			const uint8_t x_dot_over_refresh_rate = 1;
-
-			// If rollover occurred based on x_dot_over_refresh_rate
-			if (refresh_cntr % x_dot_over_refresh_rate == 0){
-				// Shift transient impulses by 1
-				for (uint8_t idx = NUM_LEDS - 1; idx > 0; idx--){
-					transient_locations[idx] = transient_locations[idx-1];
-				}
-
-				// If a transient has occurred since the last time we checked
-				if (transient_present > 0){
-					// Start transient on first LED
-					transient_locations[0] = 1;
-				} else{
-					transient_locations[0] = 0;
-				}
-
-				// Reset Transient counter
-				transient_present = 0;
-
-				// In any location where a transient has just moved, set led_transient_component to 1
-				for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
-					if (transient_locations[idx] > 0){
-						led_transient_component[idx] = 1.0f;
-					}
-				}
-			}
-
-			// Now calculate intensity component of LEDs
+			// Determine Intensity
+			const uint32_t filt_len = LED_CIRBUF_LEN-1; // LED_CIRBUF_LEN-1 is longest filter length possible without accruing errors
+			cirbuf_intensity[led_cirbuf_idx] = ApplyFIRLPF(
+				cirbuf_env_downsample,
+				led_cirbuf_idx,
+				filt_len,
+				LED_CIRBUF_LEN,
+				&intensity_lpf_accum
+			);
+			intensity = cirbuf_intensity[led_cirbuf_idx] >> 5;
+			intensity_scaled = (float)intensity * intensity_gain;
+//			intensity_scaled = 10;
 			for (uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
-				// Calculate led intensity component based on recorded intensity and max intensity
-				// Max intensity estimated by experimentation (blowing on mic).
-				// Goal is for intensity_factor to be between 0 and 1. Ceiling of 1 by design.
-				intensity_factor = fminf(cirbuf_intensity[cirbuf_idx], 1.0);
-				led_intensity_component[chan_idx] = intensity_factor * ( sin((float)refresh_cntr / led_chan_periods[chan_idx]) + 1) * 0.5;
+				led_intensity_component[chan_idx] = intensity_scaled * ( sin( (float)refresh_cntr / led_chan_periods[chan_idx]) + 1);
 			}
+
+//			// Update transient component of LEDs based on previous value and decay rate
+//			for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
+//				const float decay_factor = 0.9;
+//				led_transient_component[idx] = decay_factor * led_transient_component[idx];
+//			}
+
+//			// Define constant that compares how many refresh cycles need to occur before
+//			// transient pulse "moves" to the next LED.
+//			const uint8_t x_dot_over_refresh_rate = 1;
+//
+//			// If rollover occurred based on x_dot_over_refresh_rate
+//			if (refresh_cntr % x_dot_over_refresh_rate == 0){
+//				// Shift transient impulses by 1
+//				for (uint8_t idx = NUM_LEDS - 1; idx > 0; idx--){
+//					transient_locations[idx] = transient_locations[idx-1];
+//				}
+//
+//				// If a transient has occurred since the last time we checked
+//				if (transient_present > 0){
+//					// Start transient on first LED
+//					transient_locations[0] = 1;
+//				} else{
+//					transient_locations[0] = 0;
+//				}
+//
+//				// Reset Transient counter
+//				transient_present = 0;
+//
+//				// In any location where a transient has just moved, set led_transient_component to 1
+//				for (uint8_t idx = 0; idx < NUM_LEDS; idx++){
+//					if (transient_locations[idx] > 0){
+//						led_transient_component[idx] = 1.0f;
+//					}
+//				}
+//			}
 
 			// Cycle through each LED and each color channel
 			uint32_t ccr_idx = 0;
@@ -395,17 +411,19 @@ inline void config_led_s(Event evt){
 				for(uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
 					// Calculate channel color for this LED by scaling and combining intensity and transient component
 					// Scale intensity and transient components so roughly between 0 and 255
-					const float transient_intensity_ratio_scale = (1 / 4095.0); // Pre-calculate to speed up
-					transient_intensity_ratio = transient_intensity_ratio_adc * transient_intensity_ratio_scale;
-					i_and_t = 	( led_intensity_component[chan_idx] * (1.0-transient_intensity_ratio) ) +
-								( led_transient_component[led_idx] * transient_intensity_ratio );
+//					const float transient_intensity_ratio_scale = (1 / 4095.0); // Pre-calculate to speed up
+//					transient_intensity_ratio = transient_intensity_ratio_adc * transient_intensity_ratio_scale;
+//					i_and_t = 	( led_intensity_component[chan_idx] * (1.0-transient_intensity_ratio) ) +
+//								( led_transient_component[led_idx] * transient_intensity_ratio );
 
-					// Calculate global brightness gain based on ADC read channel (potentiometer)
-					const float brightness_gain_scale = 255.0 / 4095.0; // Pre-calculate to speed up
-					brightness_gain = brightness_gain_adc * brightness_gain_scale;
+
+//					// Calculate global brightness gain based on ADC read channel (potentiometer)
+//					const float brightness_gain_scale = 255.0 / 4095.0; // Pre-calculate to speed up
+//					brightness_gain = brightness_gain_adc * brightness_gain_scale;
 
 					// Put all values together to determine intensity for this LED channel
-					led_vals[led_idx][chan_idx] = (uint8_t)(fminf(brightness_gain * i_and_t, 255.0));
+					i_and_t = led_intensity_component[chan_idx];
+					led_vals[led_idx][chan_idx] = (uint8_t)(fminf(i_and_t, 255.0));
 
 					// Generate array for Timer CCR values corresponding to each bit that will be written to LEDs
 					for(int8_t bit_idx = 7; bit_idx >=0; bit_idx--){
@@ -447,7 +465,7 @@ inline void config_led_s(Event evt){
     }
 }
 
-inline void led_s(Event evt){
+void led_s(Event evt){
     switch(evt){
 		case ENTER:
 			// By this point, sampling the ADCs and running DSP is assumed to have kept
@@ -502,13 +520,11 @@ int main(void)
   MX_TIM2_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-
-  	// Calculate LCM for LED periods
-  	led_chan_periods_lcm = 0;
-  	for (uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
-  		led_chan_periods_lcm += (uint32_t)led_chan_periods[chan_idx];
-  	}
-
+	// Calculate LCM for LED periods
+	led_chan_periods_lcm = (uint32_t)led_chan_periods[0];
+	for (uint8_t chan_idx = 1; chan_idx < NUM_LED_CHANNELS; chan_idx++){
+		led_chan_periods_lcm *= (uint32_t)led_chan_periods[chan_idx];
+	}
 
   	// Peripheral Configuration ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Configure DMA for transfer from ADC to memory

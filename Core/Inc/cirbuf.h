@@ -17,7 +17,11 @@ uint8_t ArrayIdxToCirBufIdx(
 
 int32_t ApplyFirstDifferenceLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T, int32_t gain);
 
+int32_t ApplyFIRLPF(int32_t* x_cirbuf, int32_t cirbuf_idx_start, uint32_t filt_len, uint32_t cirbuf_size, int32_t* p_accum);
+
 int32_t ApplyFirstDifferenceEnvelopeLPF(int32_t y_minus_1, int32_t x_0, int32_t tau_over_T, int32_t gain);
+
+int32_t ApplyFirstDifferenceEnvelopeLinear(int32_t y_minus_1, int32_t x_0, int32_t gain);
 
 float ApplyFirstDifferenceLPF_float(float y_minus_1, float x_0, float tau_over_T);
 
