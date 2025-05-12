@@ -172,7 +172,7 @@ void config_mic_s(Event evt){
 				gain_hpf_beat = 4;
 
 				// Calculate Transient Threshold based on ADC read and intensity (threshold is scaled intensity value)
-				uint16_t transient_sensitivity_adc = 4095 - adc_reads[ADC_RANK_TRANSIENT_SENSITIVITY];
+				uint16_t transient_sensitivity_adc = adc_reads[ADC_RANK_TRANSIENT_SENSITIVITY];
 				transient_thresh = transient_sensitivity_adc;
 
 				// Reset sample tracker
@@ -269,7 +269,7 @@ void mic_s(Event evt){
 }
 
 // LED output variables
-#define NUM_LEDS 30
+#define NUM_LEDS 38
 #define NUM_LED_CHANNELS 3
 uint8_t led_vals[NUM_LEDS][NUM_LED_CHANNELS];
 
@@ -302,7 +302,7 @@ float intensity_gain;
 float intensity_scaled;
 float led_intensity_component[NUM_LED_CHANNELS];
 
-//// Declare LED variables external from state machine for easier tracking/debugging
+// Declare LED variables external from state machine for easier tracking/debugging
 float transient_gain;
 uint8_t transient_locations[NUM_LEDS];
 float led_transient_component[NUM_LEDS];
@@ -338,12 +338,9 @@ void config_led_s(Event evt){
 			// Update LED circular buffer index
 			led_cirbuf_idx = (led_cirbuf_idx + 1) % LED_CIRBUF_LEN;
 
-			// Calculate intensity component of LEDs
+			// Calculate intensity component of LEDs using LPF on downsampled envelope signal
 			intensity_gain = (float)(4095 - adc_reads[ADC_RANK_INTENSITY_GAIN]) * (5.0/4095.0);
-//			intensity_gain = 1;
 			cirbuf_env_downsample[led_cirbuf_idx] = cirbuf_env_scaled[mic_cirbuf_idx]; // Down-sample: assign last env value to intensity signal
-
-			// Determine Intensity using LPF on downsampled envelope signal
 			const uint32_t filt_len = LED_CIRBUF_LEN-1; // LED_CIRBUF_LEN-1 is longest filter length possible without accruing errors
 			cirbuf_intensity[led_cirbuf_idx] = ApplyFIRLPF(
 				cirbuf_env_downsample,
@@ -353,8 +350,8 @@ void config_led_s(Event evt){
 				&intensity_lpf_accum
 			);
 			intensity = cirbuf_intensity[led_cirbuf_idx] >> 4;
-			intensity_scaled = (float)intensity * intensity_gain;
-//			intensity_scaled = 10;
+//			intensity_scaled = (float)intensity * intensity_gain;
+			intensity_scaled = log((float)intensity * intensity_gain);
 			for (uint8_t chan_idx = 0; chan_idx < NUM_LED_CHANNELS; chan_idx++){
 				led_intensity_component[chan_idx] = intensity_scaled * ( sin( (float)refresh_cntr / led_chan_periods[chan_idx]) + 1);
 			}
